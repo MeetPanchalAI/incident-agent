@@ -2,8 +2,10 @@
 
 One pass per user message. The model must call a tool at every step, so the
 only way to end a turn is `submit_response`; there is no free text to parse.
-Every tool call gets a reply, including rejected ones, because the API
-refuses the next request if any tool_call_id is left unanswered.
+Every tool call gets a reply, including rejected ones, because the API refuses
+the next request if any call_id is left unanswered. The conversation is a list
+of Responses API items: role messages, the model's own output items (reasoning
+and function calls), and one function_call_output per call.
 
 Hard bound per turn: `max_llm_steps` loop calls plus at most one forced final
 call. Repairs happen inside the loop and cost a step, not an extra call.
@@ -11,11 +13,10 @@ call. Repairs happen inside the loop and cost a step, not an extra call.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
 from .config import Settings
-from .llm import LLMClient
+from .llm import LLMClient, tool_result_item
 from .prompts import Prompts
 from .report import FinalOutcome, build_from_ledger, finalize, finalize_unverified, submit_response_schema
 from .session import Session
@@ -67,7 +68,7 @@ class AgentService:
             reply = self.llm.chat(session.messages, self.tools)
             llm_calls += 1
             budget.use_step()
-            session.messages.append(reply.message)
+            session.messages.extend(reply.items)
 
             if not reply.tool_calls:
                 budget.unproductive_streak += 1
@@ -109,7 +110,7 @@ class AgentService:
         session.messages.append({"role": "system", "content": self.prompts.force_final})
         reply = self.llm.chat(session.messages, [submit_response_schema()], force="submit_response")
         llm_calls += 1
-        session.messages.append(reply.message)
+        session.messages.extend(reply.items)
 
         call = next((c for c in reply.tool_calls if c.name == "submit_response"), None)
         if call is None:
@@ -127,11 +128,7 @@ class AgentService:
 
     @staticmethod
     def _reply_to(session: Session, call: ToolCall, payload: dict) -> None:
-        session.messages.append({
-            "role": "tool",
-            "tool_call_id": call.id,
-            "content": json.dumps(payload, default=str),
-        })
+        session.messages.append(tool_result_item(call.id, payload))
 
     def _result(self, outcome: FinalOutcome, session: Session, llm_calls: int, budget: Budget,
                 stopped_early: bool = False) -> TurnResult:

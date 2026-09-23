@@ -149,14 +149,12 @@ class ToolSpec(BaseModel):
     category: Category
 
     def openai_schema(self) -> dict:
+        """The Responses API tool shape: flat, not nested under "function"."""
         schema = self.args_model.model_json_schema()
         schema.pop("title", None)
         for prop in schema.get("properties", {}).values():
             prop.pop("title", None)
-        return {
-            "type": "function",
-            "function": {"name": self.name, "description": self.description, "parameters": schema},
-        }
+        return {"type": "function", "name": self.name, "description": self.description, "parameters": schema}
 
 
 TOOL_SPECS: list[ToolSpec] = [

@@ -15,9 +15,14 @@ DONE = ("submit_response", submit())
 
 
 def unanswered(session) -> list[str]:
-    """Tool call ids the loop failed to reply to."""
-    requested = {c["id"] for m in session.messages for c in (m.get("tool_calls") or [])}
-    return sorted(requested - {m["tool_call_id"] for m in session.messages if m["role"] == "tool"})
+    """Call ids the loop failed to reply to. The API refuses the next request if any is left."""
+    requested = {i["call_id"] for i in session.messages if i.get("type") == "function_call"}
+    answered = {i["call_id"] for i in session.messages if i.get("type") == "function_call_output"}
+    return sorted(requested - answered)
+
+
+def tool_outputs(session) -> list[str]:
+    return [i["output"] for i in session.messages if i.get("type") == "function_call_output"]
 
 
 def run(settings, script, **kwargs):
@@ -32,6 +37,7 @@ def run(settings, script, **kwargs):
 def test_every_tool_call_is_answered(settings):
     _, session, _ = run(settings, [[METRICS, DEPLOYS], [BAD], [DONE]])
     assert unanswered(session) == []
+    assert len(tool_outputs(session)) == 4
 
 
 def test_every_tool_call_is_answered_even_when_rejected(settings):
@@ -61,7 +67,7 @@ def test_the_tool_budget_cuts_a_batch_off_in_emission_order(settings):
 def test_submit_alongside_other_tools_is_rejected_and_the_loop_continues(settings):
     _, session, result = run(settings, [[METRICS, DONE], [DONE]])
     assert result.steps == 2
-    assert any("only call in a step" in m["content"] for m in session.messages if m["role"] == "tool")
+    assert any("only call in a step" in out for out in tool_outputs(session))
 
 
 def test_submit_is_never_blocked_by_the_tool_budget(settings):
@@ -108,7 +114,7 @@ INVENTED = ("submit_response", submit(observed_facts=[{"statement": "x", "eviden
 def test_an_invalid_final_response_gets_one_repair_attempt(settings):
     _, session, result = run(settings, [[INVENTED], [DONE]])
     assert result.outcome.unverified is False
-    assert any("obs_404 does not exist" in m["content"] for m in session.messages if m["role"] == "tool")
+    assert any("obs_404 does not exist" in out for out in tool_outputs(session))
 
 
 def test_a_second_invalid_response_is_returned_unverified(settings):

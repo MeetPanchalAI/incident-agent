@@ -77,15 +77,13 @@ def submit_response_schema() -> dict:
     schema.pop("title", None)
     return {
         "type": "function",
-        "function": {
-            "name": "submit_response",
-            "description": (
-                "End the turn with your final answer. Call this alone, never alongside other tools, "
-                "and only after you have reviewed every tool result you asked for. "
-                "Every observed fact must cite the observation IDs it came from."
-            ),
-            "parameters": schema,
-        },
+        "name": "submit_response",
+        "description": (
+            "End the turn with your final answer. Call this alone, never alongside other tools, "
+            "and only after you have reviewed every tool result you asked for. "
+            "Every observed fact must cite the observation IDs it came from."
+        ),
+        "parameters": schema,
     }
 
 

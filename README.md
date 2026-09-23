@@ -28,7 +28,7 @@ Every tunable parameter is in `.env`, so the agent can be retuned and re-measure
 | `OPENAI_API_KEY` | — | Required for the CLI, the web UI and the evals. Not needed by the tests. |
 | `AGENT_MODEL` | `gpt-5.6-luna` | Any OpenAI model with tool calling. |
 | `AGENT_TEMPERATURE` | `1` | Reasoning models generally require 1. |
-| `AGENT_REASONING_EFFORT` | `low` | `minimal`/`low`/`medium`/`high`. Only sent when set, so other models are unaffected. |
+| `AGENT_REASONING_EFFORT` | `low` | `minimal`/`low`/`medium`/`high`. Only sent when set, so non-reasoning models are unaffected. |
 | `AGENT_NOW` | `2026-09-23T10:00:00Z` | A fixed timestamp, or `auto` for the system clock. See below. |
 | `AGENT_WORLD` | `incident` | Which mock world the tools read from. |
 | `AGENT_PROMPTS_DIR` | `prompts/` | Where the prompt files live. |
@@ -101,7 +101,7 @@ src/incident_agent/
   session.py        message history, evidence ledger, de-duplication
   report.py         submit_response schema, citation checks, confidence limits
   prompts.py        loads the prompt files
-  llm.py            OpenAI adapter, and the scripted fake used by the tests
+  llm.py            OpenAI Responses adapter, and the scripted fake used by the tests
   config.py         every tunable parameter, read from the environment
   cli.py            interactive command line
   api.py            four HTTP endpoints

@@ -11,7 +11,7 @@ Browser (index.html) ─┐                        ┌─ CLI (cli.py)
               ┌────────────────────────────────┼────────────────────────────────┐
               ▼                                ▼                                ▼
       Session                          LLM client                       ToolExecutor
-      messages, evidence ledger,       OpenAI adapter, or a             budget → validate → dedupe
+      conversation, evidence ledger,   OpenAI Responses adapter,        budget → validate → dedupe
       de-duplication hashes            scripted fake in tests           → policy → run with timeout
                                                                         and retry → validate result
                                                                         → summarise → observation
@@ -79,8 +79,8 @@ model meant to stop.
 
 Four rules make the loop safe:
 
-- **Every tool call gets a tool message**, including rejected ones. The API refuses the next request
-  if any `tool_call_id` is left unanswered, so a silently dropped call would break the conversation.
+- **Every tool call gets a result item**, including rejected ones. The API refuses the next request
+  if any `call_id` is left unanswered, so a silently dropped call would break the conversation.
 - **`submit_response` must be alone in its step.** If it arrives alongside data tools, it is answered
   with "review the other results first" and the loop continues. Answering before reading the results
   you just asked for is not a conclusion.
@@ -101,6 +101,27 @@ would save nothing measurable while making observation ordering non-deterministi
 **Cost bound per turn: `AGENT_MAX_LLM_STEPS` plus one** — the loop steps plus the forced final call,
 so 11 at the default. A repair of an invalid final response happens inside the loop and costs a
 step, not an extra call.
+
+### Why the Responses API
+
+The adapter targets `/v1/responses`, not Chat Completions, because the model this agent runs on
+refuses the combination it needs:
+
+> Function tools with reasoning_effort are not supported for gpt-5.6-luna in
+> /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.
+
+Omitting the parameter fails the same way; the model reasons by default. The alternative was
+`reasoning_effort: none`, and it is a poor one here. `tool_choice` is `"required"`, so every reply
+is tool calls with no text content — reasoning is the only place this agent can deliberate between
+steps, and deciding what to check next from what the last call returned is the behaviour the whole
+design is about.
+
+The conversation is therefore a list of Responses items rather than chat messages: role messages,
+the model's own output items (its reasoning and its function calls), and one `function_call_output`
+per call. Nothing is stored server side (`store=False`), so the reasoning items travel in the
+conversation, which is why the client asks for `reasoning.encrypted_content`. Everything above the
+adapter — the executor, the ledger, the report validation, the guardrails — was unaffected by the
+change.
 
 ## How the agent chooses a tool
 

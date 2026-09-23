@@ -1,7 +1,18 @@
-"""Adapter over the OpenAI Chat Completions API, plus a scripted fake.
+"""Adapter over the OpenAI Responses API, plus a scripted fake.
 
-The fake is what lets every loop and guardrail test run deterministically,
-with no API key and no network.
+The Responses API rather than Chat Completions, because the model this agent
+targets refuses function tools and reasoning together on Chat Completions:
+
+    Function tools with reasoning_effort are not supported for gpt-5.6-luna in
+    /v1/chat/completions. To use function tools, use /v1/responses or set
+    reasoning_effort to 'none'.
+
+Turning reasoning off was the alternative, and a poor one: `tool_choice` is
+"required", so every reply is tool calls with no text content, and reasoning is
+the only place this agent can deliberate between steps. See DESIGN.md.
+
+The fake is what lets every loop and guardrail test run deterministically, with
+no API key and no network.
 """
 
 from __future__ import annotations
@@ -16,13 +27,20 @@ from .tools.executor import ToolCall
 
 @dataclass
 class LLMReply:
-    message: dict
+    """One model turn: the items to append to the conversation, and the calls to run."""
+
+    items: list[dict]
     tool_calls: list[ToolCall]
     usage: dict = field(default_factory=dict)
 
 
 class LLMClient(Protocol):
-    def chat(self, messages: list[dict], tools: list[dict], force: str | None = None) -> LLMReply: ...
+    def chat(self, items: list[dict], tools: list[dict], force: str | None = None) -> LLMReply: ...
+
+
+def tool_result_item(call_id: str, payload: dict) -> dict:
+    """The conversation item that answers one tool call."""
+    return {"type": "function_call_output", "call_id": call_id, "output": json.dumps(payload, default=str)}
 
 
 def _parse(call_id: str, name: str, raw_arguments: str) -> ToolCall:
@@ -47,22 +65,35 @@ class OpenAIClient:
         self.settings = settings
         self.model = settings.model
 
-    def chat(self, messages: list[dict], tools: list[dict], force: str | None = None) -> LLMReply:
-        # reasoning_effort is only sent when set, so non-reasoning models are unaffected.
-        extra = {"reasoning_effort": self.settings.reasoning_effort} if self.settings.reasoning_effort else {}
-        response = self._client.chat.completions.create(
+    def chat(self, items: list[dict], tools: list[dict], force: str | None = None) -> LLMReply:
+        # reasoning is only sent when an effort is configured, so non-reasoning
+        # models are unaffected. store=False keeps nothing server side, which is
+        # why the reasoning items have to travel in the conversation instead.
+        extra: dict = {}
+        if self.settings.reasoning_effort:
+            extra["reasoning"] = {"effort": self.settings.reasoning_effort}
+            extra["include"] = ["reasoning.encrypted_content"]
+
+        response = self._client.responses.create(
             model=self.model,
-            messages=messages,
+            input=items,
             tools=tools,
-            tool_choice={"type": "function", "function": {"name": force}} if force else "required",
+            tool_choice={"type": "function", "name": force} if force else "required",
             parallel_tool_calls=force is None,
             temperature=self.settings.temperature,
+            store=False,
             **extra,
         )
-        message = response.choices[0].message
-        calls = [_parse(c.id, c.function.name, c.function.arguments) for c in (message.tool_calls or [])]
-        usage = response.usage.model_dump() if response.usage else {}
-        return LLMReply(message=message.model_dump(exclude_none=True), tool_calls=calls, usage=usage)
+        calls = [
+            _parse(item.call_id, item.name, item.arguments)
+            for item in response.output
+            if item.type == "function_call"
+        ]
+        return LLMReply(
+            items=[item.model_dump(exclude_none=True) for item in response.output],
+            tool_calls=calls,
+            usage=response.usage.model_dump() if response.usage else {},
+        )
 
 
 class FakeLLM:
@@ -72,18 +103,19 @@ class FakeLLM:
         self.script = list(script)
         self.calls: list[list[dict]] = []
 
-    def chat(self, messages: list[dict], tools: list[dict], force: str | None = None) -> LLMReply:
+    def chat(self, items: list[dict], tools: list[dict], force: str | None = None) -> LLMReply:
         if not self.script:
             raise AssertionError("FakeLLM script is exhausted: the agent made more calls than expected.")
         step = self.script.pop(0)
-        self.calls.append(messages)
-        tool_calls, payload = [], []
+        self.calls.append(items)
+        tool_calls, emitted = [], []
         for index, (name, arguments) in enumerate(step):
             call_id = f"call_{len(self.calls)}_{index}"
             tool_calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
-            payload.append({
-                "id": call_id,
-                "type": "function",
-                "function": {"name": name, "arguments": json.dumps(arguments, default=str)},
+            emitted.append({
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": json.dumps(arguments, default=str),
             })
-        return LLMReply(message={"role": "assistant", "content": None, "tool_calls": payload}, tool_calls=tool_calls)
+        return LLMReply(items=emitted, tool_calls=tool_calls)
