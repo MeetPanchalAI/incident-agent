@@ -11,12 +11,9 @@ from __future__ import annotations
 import statistics
 from datetime import datetime
 
-from ..config import format_iso
+from ..config import Detection, format_iso
 from .mock_backend import catalog
 from .schemas import Dependencies, Deployment, LogEvent, MetricPoint
-
-MIN_METRIC_POINTS = 5
-SPIKE_MULTIPLIER = 3
 
 
 def _window(start: datetime, end: datetime) -> str:
@@ -46,26 +43,28 @@ def empty_summary(tool: str, service: str, start: datetime | None, end: datetime
 
 
 def summarize_metrics(
-    service: str, metric: str, start: datetime, end: datetime, points: list[MetricPoint], limit: int
+    service: str, metric: str, start: datetime, end: datetime, points: list[MetricPoint],
+    limit: int, detection: Detection,
 ) -> tuple[str, list[dict]]:
     values = [p.value for p in points]
     head = f"{metric} on {service}, {_window(start, end)}: {len(points)} points"
     rows = [{"timestamp": format_iso(p.timestamp), "value": p.value} for p in _sample(points, limit)]
     truncated = f" Showing {len(rows)} of {len(points)} points." if len(rows) < len(points) else ""
 
-    if len(points) < MIN_METRIC_POINTS:
-        return f"{head}; insufficient metric data for spike detection (at least {MIN_METRIC_POINTS} needed).{truncated}", rows
+    if len(points) < detection.min_metric_points:
+        return (f"{head}; insufficient metric data for spike detection "
+                f"(at least {detection.min_metric_points} needed).{truncated}"), rows
 
     min_delta = catalog()["metrics"][metric]["min_delta"]
     baseline = statistics.median(values)
-    threshold = max(SPIKE_MULTIPLIER * baseline, baseline + min_delta)
+    threshold = max(detection.spike_multiplier * baseline, baseline + min_delta)
     body = f"; baseline (median) {_fmt(baseline, metric)}; threshold {_fmt(threshold, metric)}"
 
     # The median is only a usable baseline while normal behaviour occupies most of
     # the window. Comparing it against the quietest tenth detects when it does not,
     # which would otherwise report "no spike" and read as an all-clear.
     quietest = statistics.quantiles(values, n=10)[0] if len(values) >= 10 else min(values)
-    if baseline > max(SPIKE_MULTIPLIER * quietest, quietest + min_delta):
+    if baseline > max(detection.spike_multiplier * quietest, quietest + min_delta):
         return (
             f"{head}; quietest tenth {_fmt(quietest, metric)}, median {_fmt(baseline, metric)}: "
             "elevated for most of the window, so the median is not a usable baseline and no spike "

@@ -29,5 +29,5 @@ def build_service(
     llm: LLMClient | None = None,
 ) -> AgentService:
     """Assemble an agent. Pass `llm` to use a fake client instead of the real one."""
-    backend = MockBackend(world or settings.world, faults)
-    return AgentService(settings, llm or OpenAIClient(settings.model, settings.api_key), backend)
+    backend = MockBackend(world or settings.world, faults, now=settings.now)
+    return AgentService(settings, llm or OpenAIClient(settings), backend)

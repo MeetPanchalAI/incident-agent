@@ -224,7 +224,8 @@ class ToolExecutor:
         if name == "get_metrics":
             points = [MetricPoint.model_validate(row) for row in raw]
             return summaries.summarize_metrics(
-                args_model.service, args_model.metric, args_model.start_time, args_model.end_time, points, limit)
+                args_model.service, args_model.metric, args_model.start_time, args_model.end_time,
+                points, limit, self.settings.detection)
         if name == "search_logs":
             events = [LogEvent.model_validate(row) for row in raw]
             return summaries.summarize_logs(

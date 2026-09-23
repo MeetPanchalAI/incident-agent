@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from .config import Settings
 from .llm import LLMClient
-from .prompts import FORCE_FINAL, STOPPED_EARLY_GAP, SUBMIT_INVALID, SUBMIT_NOT_ALONE, system_prompt
+from .prompts import Prompts
 from .report import FinalOutcome, build_from_ledger, finalize, finalize_unverified, submit_response_schema
 from .session import Session
 from .tools.executor import Batch, Budget, ToolCall, ToolExecutor
@@ -47,12 +47,13 @@ class AgentService:
         self.settings = settings
         self.llm = llm
         self.backend = backend
+        self.prompts = Prompts(settings)
         self.executor = ToolExecutor(settings, backend)
         self.tools = [spec.openai_schema() for spec in TOOL_SPECS] + [submit_response_schema()]
 
     def new_session(self) -> Session:
         session = Session(world=self.backend.world_name)
-        session.messages.append({"role": "system", "content": system_prompt(self.settings)})
+        session.messages.append({"role": "system", "content": self.prompts.system})
         return session
 
     # -- one turn ----------------------------------------------------------
@@ -89,7 +90,7 @@ class AgentService:
 
     def _finalize(self, call: ToolCall, session: Session, budget: Budget, alone: bool) -> tuple[FinalOutcome | None, dict]:
         if not alone:
-            return None, {"status": "rejected", "error": SUBMIT_NOT_ALONE}
+            return None, {"status": "rejected", "error": self.prompts.submit_not_alone}
 
         if call.arguments_error:
             outcome, errors = None, [call.arguments_error]
@@ -100,12 +101,12 @@ class AgentService:
 
         if budget.repairs_used < self.settings.budgets.repair_attempts:
             budget.repairs_used += 1
-            return None, {"status": "rejected", "error": SUBMIT_INVALID.format(errors="\n".join(f"- {e}" for e in errors))}
+            return None, {"status": "rejected", "error": self.prompts.submit_invalid(errors)}
         return finalize_unverified(call.arguments, session, errors), {"status": "accepted_unverified"}
 
     def _force_final(self, session: Session, budget: Budget, llm_calls: int) -> TurnResult:
         """One last call, offering only submit_response, so the user always gets an answer."""
-        session.messages.append({"role": "system", "content": FORCE_FINAL})
+        session.messages.append({"role": "system", "content": self.prompts.force_final})
         reply = self.llm.chat(session.messages, [submit_response_schema()], force="submit_response")
         llm_calls += 1
         session.messages.append(reply.message)
@@ -119,7 +120,7 @@ class AgentService:
                 outcome = finalize_unverified(call.arguments, session, errors)
             self._reply_to(session, call, {"status": "accepted"})
 
-        outcome.response.gaps.append(STOPPED_EARLY_GAP)
+        outcome.response.gaps.append(self.prompts.stopped_early)
         return self._result(outcome, session, llm_calls, budget, stopped_early=True)
 
     # -- helpers -----------------------------------------------------------

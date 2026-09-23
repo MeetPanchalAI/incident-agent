@@ -18,12 +18,18 @@ Browser (index.html) ─┐                        ┌─ CLI (cli.py)
                                                                                      │
                                                                                      ▼
                                                                         Mock backend
-                                                                        JSON worlds, fixed clock,
-                                                                        injected faults
+                                                                        JSON worlds rebased onto the
+                                                                        clock, injected faults
 ```
 
 The CLI, the HTTP API and the tests all call the same `AgentService`. The API and the UI hold no
 logic of their own and cannot bypass any guardrail.
+
+**Nothing tunable is hard-coded.** The model, temperature and reasoning effort, every budget, the
+spike-detection thresholds, the result limits and the clock all come from `.env` through one
+`Settings` object that is threaded explicitly rather than read from globals. The prompts are files
+in `prompts/`. The point is that a change can be made and then measured: edit a value, run
+`python -m evals.run`, compare. README.md lists every variable.
 
 ## Why this architecture
 
@@ -50,7 +56,7 @@ One pass per user message.
 ```python
 def run_turn(session, user_message):
     session.start_turn(user_message)
-    budget = Budget(...)                       # 10 steps, 12 tool calls, 3 unproductive results
+    budget = Budget(...)                       # every limit comes from .env
     while budget.has_steps() and not budget.stuck():
         reply = llm.chat(session.messages, tools=ALL_TOOLS, tool_choice="required")
         budget.use_step()
@@ -92,8 +98,9 @@ metrics has told it 14:37, and cannot query `payment-gateway` before dependencie
 Running them concurrently in a thread pool was not done: the backend is in-process, so concurrency
 would save nothing measurable while making observation ordering non-deterministic.
 
-**Cost bound per turn: at most 11 model calls** — ten loop steps plus one forced final call. A repair
-of an invalid final response happens inside the loop and costs a step, not an extra call.
+**Cost bound per turn: `AGENT_MAX_LLM_STEPS` plus one** — the loop steps plus the forced final call,
+so 11 at the default. A repair of an invalid final response happens inside the loop and costs a
+step, not an extra call.
 
 ## How the agent chooses a tool
 
@@ -103,7 +110,8 @@ Nothing in the code picks tools. The model does, from three inputs:
    what it returns. `get_metrics` says it is usually the first step when asked why something went
    wrong, because it establishes whether anything actually changed. `get_service_dependencies` says
    to use it when a service looks affected but nothing local explains it.
-2. **The system prompt.** It describes good investigative practice without prescribing a sequence:
+2. **The system prompt**, read from `prompts/system.md`. It describes good investigative practice
+   without prescribing a sequence:
    use what you learn, narrow the window around a spike, follow dependencies upward, ask rather than
    guess when the service or the window is unclear.
 3. **The observations so far**, which are in the message history, including from earlier turns.
@@ -116,14 +124,14 @@ directly: at least one call must use a value it could only have learnt from an e
 
 ## Preventing loops and runaway cost
 
-| Control | Default | What happens when it is hit |
-|---|---|---|
-| Model steps per turn | 10 | `force_final` |
-| Tool calls per turn, including rejected ones | 12 | Further calls return `budget_exceeded` |
-| Consecutive unproductive results | 3 | `force_final` |
-| Tool timeout / retries | 2 s / 1 | Retry once on timeout or a transient error, then report `timeout` |
-| Repairs of an invalid final response | 1 per turn | Return the response marked `unverified` |
-| Forced final call | 1 per turn | Allowed even when the step budget is spent |
+| Control | Variable | Default | What happens when it is hit |
+|---|---|---|---|
+| Model steps per turn | `AGENT_MAX_LLM_STEPS` | 10 | `force_final` |
+| Tool calls per turn, including rejected ones | `AGENT_MAX_TOOL_CALLS` | 12 | Further calls return `budget_exceeded` |
+| Consecutive unproductive results | `AGENT_STUCK_THRESHOLD` | 3 | `force_final` |
+| Tool timeout / retries | `AGENT_TOOL_TIMEOUT_S` / `AGENT_TOOL_RETRIES` | 2 s / 1 | Retry once on timeout or a transient error, then report `timeout` |
+| Repairs of an invalid final response | `AGENT_REPAIR_ATTEMPTS` | 1 per turn | Return the response marked `unverified` |
+| Forced final call | — | 1 per turn | Allowed even when the step budget is spent |
 
 An unproductive result is `invalid_arguments`, `duplicate` or `budget_exceeded` — the three
 outcomes that mean the model learnt nothing. Three in a row means it is not making progress, and
@@ -189,10 +197,10 @@ The metric rule:
 
 | Step | Rule |
 |---|---|
-| Minimum data | At least 5 points, otherwise no spike claim is made. |
+| Minimum data | At least `AGENT_MIN_METRIC_POINTS` points (5), otherwise no spike claim is made. |
 | Baseline | Median of the window. |
-| Usable baseline | If the median is itself more than 3× the quietest tenth of the window (or exceeds it by the minimum difference), the window is mostly elevated. The summary says the median is not a usable baseline, gives no spike start, and asks for a wider window. |
-| Spike | First point above `max(3 × baseline, baseline + min_delta)`. Reports the baseline, the spike start, the peak and its time, and how many points are above the threshold. |
+| Usable baseline | If the median is itself more than `AGENT_SPIKE_MULTIPLIER` times the quietest tenth of the window (or exceeds it by the minimum difference), the window is mostly elevated. The summary says the median is not a usable baseline, gives no spike start, and asks for a wider window. |
+| Spike | First point above `max(AGENT_SPIKE_MULTIPLIER × baseline, baseline + min_delta)`. Reports the baseline, the spike start, the peak and its time, and how many points are above the threshold. |
 | `min_delta` | `error_rate` 0.01 · `latency_p95_ms` 100 · `request_rate` 10. Stops a tiny baseline turning noise into a "3× spike". |
 | Scope | Increases only. |
 
@@ -238,8 +246,17 @@ outage". A bounded grammar refuses instead, with a reason, and the agent asks th
 - **Narrowing a window** from timestamps seen in a result is allowed. That is copying an observed
   value, not date arithmetic, and the validator still bounds it.
 
-`NOW` is fixed and injected, never read from the system clock. Mock data is anchored to it, so
-"yesterday" is always 2026-09-22 and evaluation results are reproducible.
+`NOW` comes from `AGENT_NOW`: a fixed timestamp, or `auto` for the system clock. It is always
+injected, never read from the clock directly, so a test or an evaluation can pin it.
+
+The mock data follows it. Each world declares an `anchor_date`, and on load its fixtures are moved
+by whole days so that the incident day is the day before `NOW`. Clock times within the day do not
+move: the deployment stays at 14:32 and the spike still starts at 14:37. Without this, `auto` would
+be useless — "yesterday" would land on a day with no fixture data and every investigation would
+come back empty.
+
+The generated noise on a metric is keyed on the unshifted timestamp, so a rebased world produces
+the same numbers as a pinned one. A run today and a run next week are comparable.
 
 ## Conversation state
 

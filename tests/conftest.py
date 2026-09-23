@@ -44,7 +44,7 @@ def service(settings: Settings, script, world: str = "incident", faults=None, bu
     """An AgentService driven by a scripted fake model."""
     if budgets is not None:
         settings = Settings(now=settings.now, budgets=budgets)
-    return AgentService(settings, FakeLLM(script), MockBackend(world, faults))
+    return AgentService(settings, FakeLLM(script), MockBackend(world, faults, now=settings.now))
 
 
 def submit(**overrides) -> dict:

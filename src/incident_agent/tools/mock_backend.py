@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
@@ -47,17 +47,46 @@ def available_worlds() -> list[str]:
     return sorted(p.stem for p in WORLDS_DIR.glob("*.json") if not p.stem.startswith("_"))
 
 
+def shift_for(world_name: str, now: datetime | None) -> timedelta:
+    """How far to move a world's fixtures so its incident day is the day before `now`.
+
+    Fixtures are written against the world's `anchor_date`. Rebasing them keeps
+    "yesterday afternoon" pointing at the incident whatever day the agent runs,
+    including when AGENT_NOW is the system clock. With AGENT_NOW pinned to the
+    default, the shift is zero and the data is exactly as written.
+    """
+    if now is None:
+        return timedelta(0)
+    anchor = _read_world(world_name).get("anchor_date")
+    if not anchor:
+        return timedelta(0)
+    return (now.date() - timedelta(days=1)) - date.fromisoformat(anchor)
+
+
 @lru_cache(maxsize=8)
-def _load_world(name: str) -> dict:
+def _read_world(name: str) -> dict:
     path = WORLDS_DIR / f"{name}.json"
     if not path.exists():
         raise ValueError(f"Unknown world '{name}'. Available: {', '.join(available_worlds())}")
-    world = json.loads(path.read_text(encoding="utf-8"))
-    world["logs"] = _expand_logs(world.get("logs", []))
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=32)
+def _load_world(name: str, shift_days: int = 0) -> dict:
+    world = json.loads(json.dumps(_read_world(name)))  # a copy, so the shift is not cached twice
+    shift = timedelta(days=shift_days)
+    for metrics in world.get("metrics", {}).values():
+        for spec in metrics.values():
+            if anomaly := spec.get("anomaly"):
+                for key in ("start", "peak_at", "end"):
+                    anomaly[key] = format_iso(parse_iso(anomaly[key]) + shift)
+    for deployment in world.get("deployments", []):
+        deployment["deployed_at"] = format_iso(parse_iso(deployment["deployed_at"]) + shift)
+    world["logs"] = _expand_logs(world.get("logs", []), shift)
     return world
 
 
-def _expand_logs(entries: list[dict]) -> list[dict]:
+def _expand_logs(entries: list[dict], shift: timedelta) -> list[dict]:
     """Turn `repeat` specs into individual events and sort everything by time."""
     events: list[dict] = []
     for entry in entries:
@@ -65,12 +94,12 @@ def _expand_logs(entries: list[dict]) -> list[dict]:
         if "repeat" in entry:
             spec = entry["repeat"]
             step = timedelta(minutes=spec["every_minutes"])
-            at, last = parse_iso(spec["from"]), parse_iso(spec["to"])
+            at, last = parse_iso(spec["from"]) + shift, parse_iso(spec["to"]) + shift
             while at <= last:
                 events.append({"at": at, **common})
                 at += step
         else:
-            events.append({"at": parse_iso(entry["at"]), **common})
+            events.append({"at": parse_iso(entry["at"]) + shift, **common})
     return sorted(events, key=lambda e: e["at"])
 
 
@@ -101,9 +130,10 @@ def _value_at(spec: dict, at: datetime) -> float:
 class MockBackend:
     """Reads one world and answers tool calls against it."""
 
-    def __init__(self, world: str, faults: dict[str, str] | None = None) -> None:
+    def __init__(self, world: str, faults: dict[str, str] | None = None, now: datetime | None = None) -> None:
         self.world_name = world
-        self.world = _load_world(world)
+        self.shift = shift_for(world, now)
+        self.world = _load_world(world, self.shift.days)
         self.faults = dict(faults or {})
         self._attempts: dict[str, int] = {}
 
@@ -137,7 +167,9 @@ class MockBackend:
         digits = 4 if catalog()["metrics"][metric]["unit"] == "fraction" else 1
         points, at = [], start
         while at < end:
-            value = _value_at(spec, at) + _noise(service, metric, at, spec.get("noise", 0))
+            # Noise is keyed on the unshifted time, so a rebased world produces
+            # the same numbers as a pinned one and evaluation runs stay comparable.
+            value = _value_at(spec, at) + _noise(service, metric, at - self.shift, spec.get("noise", 0))
             points.append({"timestamp": format_iso(at), "value": round(max(value, 0.0), digits)})
             at += step
         return points

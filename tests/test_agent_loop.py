@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from incident_agent.config import Budgets
-from incident_agent.prompts import STOPPED_EARLY_GAP
 from tests.conftest import WINDOW, service, submit
 
 DEPLOYS = ("get_deployments", {"service": "checkout-api", **WINDOW})
@@ -77,9 +76,9 @@ def test_submit_is_never_blocked_by_the_tool_budget(settings):
 
 def test_running_out_of_steps_still_produces_an_answer(settings):
     script = [[METRICS], [DEPLOYS], [DONE]]
-    _, _, result = run(settings, script, budgets=Budgets(max_llm_steps=2))
+    agent, _, result = run(settings, script, budgets=Budgets(max_llm_steps=2))
     assert result.stopped_early is True
-    assert STOPPED_EARLY_GAP in result.outcome.response.gaps
+    assert agent.prompts.stopped_early in result.outcome.response.gaps
     assert result.llm_calls == 3  # two loop steps plus the forced final call
 
 
@@ -128,10 +127,10 @@ def test_an_unparseable_final_response_falls_back_to_the_ledger(settings):
 def test_a_forced_final_response_is_validated_too(settings):
     """The forced call gets no second chance: an invalid payload is returned unverified."""
     script = [[METRICS], [INVENTED], [INVENTED]]
-    _, _, result = run(settings, script, budgets=Budgets(max_llm_steps=2))
+    agent, _, result = run(settings, script, budgets=Budgets(max_llm_steps=2))
     assert result.llm_calls == 3
     assert result.outcome.unverified is True
-    assert STOPPED_EARLY_GAP in result.outcome.response.gaps
+    assert agent.prompts.stopped_early in result.outcome.response.gaps
 
 
 # -- conversation state ---------------------------------------------------

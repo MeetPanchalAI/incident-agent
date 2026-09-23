@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from .config import Settings
 from .tools.executor import ToolCall
 
 
@@ -37,22 +38,26 @@ def _parse(call_id: str, name: str, raw_arguments: str) -> ToolCall:
 class OpenAIClient:
     """Thin wrapper. `force` names the one tool the model must call."""
 
-    def __init__(self, model: str, api_key: str | None) -> None:
+    def __init__(self, settings: Settings) -> None:
         from openai import OpenAI
 
-        if not api_key:
+        if not settings.api_key:
             raise RuntimeError("OPENAI_API_KEY is not set. Copy .env.example to .env and fill it in.")
-        self._client = OpenAI(api_key=api_key)
-        self.model = model
+        self._client = OpenAI(api_key=settings.api_key)
+        self.settings = settings
+        self.model = settings.model
 
     def chat(self, messages: list[dict], tools: list[dict], force: str | None = None) -> LLMReply:
+        # reasoning_effort is only sent when set, so non-reasoning models are unaffected.
+        extra = {"reasoning_effort": self.settings.reasoning_effort} if self.settings.reasoning_effort else {}
         response = self._client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=tools,
             tool_choice={"type": "function", "function": {"name": force}} if force else "required",
             parallel_tool_calls=force is None,
-            temperature=0,
+            temperature=self.settings.temperature,
+            **extra,
         )
         message = response.choices[0].message
         calls = [_parse(c.id, c.function.name, c.function.arguments) for c in (message.tool_calls or [])]
