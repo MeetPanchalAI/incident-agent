@@ -22,6 +22,11 @@ NOW = parse_iso("2026-09-23T10:00:00Z")
         ("yesterday between 2 PM and 4 PM", "2026-09-22T14:00:00Z", "2026-09-22T16:00:00Z"),
         ("2026-09-22 from 14:00 to 16:00", "2026-09-22T14:00:00Z", "2026-09-22T16:00:00Z"),
         ("2026-09-21", "2026-09-21T00:00:00Z", "2026-09-22T00:00:00Z"),
+        ("22 September", "2026-09-22T00:00:00Z", "2026-09-23T00:00:00Z"),
+        ("September 22", "2026-09-22T00:00:00Z", "2026-09-23T00:00:00Z"),
+        ("22 sep afternoon", "2026-09-22T12:00:00Z", "2026-09-22T18:00:00Z"),
+        ("on 22 September between 2 PM and 4 PM", "2026-09-22T14:00:00Z", "2026-09-22T16:00:00Z"),
+        ("22 September 2025", "2025-09-22T00:00:00Z", "2025-09-23T00:00:00Z"),
         ("last 2 hours", "2026-09-23T08:00:00Z", "2026-09-23T10:00:00Z"),
         ("last 90 minutes", "2026-09-23T08:30:00Z", "2026-09-23T10:00:00Z"),
         ("last 3 days", "2026-09-20T10:00:00Z", "2026-09-23T10:00:00Z"),
@@ -57,6 +62,7 @@ def test_today_is_clipped_to_now_and_the_clip_is_reported():
         ("yesterday 4 PM to 2 PM", "unresolvable"),
         ("2026-09-22T14:00:00Z", "unresolvable"),
         ("last 0 hours", "unresolvable"),
+        ("30 February", "unresolvable"),
         ("yesterday 25:00 to 26:00", "unresolvable"),
     ],
 )
@@ -85,3 +91,9 @@ def test_a_range_that_has_started_but_not_finished_is_clipped_to_now():
     resolved = resolve("2 PM to 4 PM", now)
     assert (format_iso(resolved.start), format_iso(resolved.end)) == ("2026-09-22T14:00:00Z", "2026-09-22T15:30:00Z")
     assert any("clipped" in a for a in resolved.assumptions)
+
+
+def test_a_month_name_without_a_year_uses_the_most_recent_one():
+    """December, asked in September, means last December rather than a future one."""
+    assert resolve("15 December", NOW).start.year == NOW.year - 1
+    assert resolve("15 March", NOW).start.year == NOW.year

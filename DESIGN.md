@@ -288,8 +288,9 @@ User: "Investigate checkout-api errors yesterday between 2 PM and 4 PM"
 
 The grammar is small, explicit and fully unit tested, all in UTC:
 
-- `today` / `yesterday` / `tomorrow` / an ISO date, optionally with `morning` 06–12, `afternoon`
-  12–18, `evening` 18–24 or `night` 00–06
+- `today` / `yesterday` / `tomorrow`, an ISO date, or a date with a month name (`22 September`,
+  `Sept 22`, with an optional year), optionally with `morning` 06–12, `afternoon` 12–18,
+  `evening` 18–24 or `night` 00–06
 - `last N minutes / hours / days`
 - a clock range such as "2 PM to 4 PM" or "14:00–16:00", with or without a date
 - two ISO 8601 timestamps

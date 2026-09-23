@@ -20,6 +20,16 @@ DAYPARTS: dict[str, tuple[int, int]] = {
     "night": (0, 6),
 }
 
+MONTHS: dict[str, int] = {
+    name: number
+    for number, names in enumerate(
+        [("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"),
+         ("may",), ("june", "jun"), ("july", "jul"), ("august", "aug"),
+         ("september", "sep", "sept"), ("october", "oct"), ("november", "nov"), ("december", "dec")],
+        start=1)
+    for name in names
+}
+
 UNITS: dict[str, str] = {
     "minute": "minutes",
     "min": "minutes",
@@ -33,6 +43,10 @@ UNITS: dict[str, str] = {
 _ISO = r"\d{4}-\d{2}-\d{2}t\d{2}:\d{2}(?::\d{2})?(?:z|[+-]\d{2}:?\d{2})?"
 _ISO_RE = re.compile(_ISO)
 _DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+_MONTH = "|".join(sorted(MONTHS, key=len, reverse=True))
+# "22 september" or "september 22", either with an optional year.
+_NAMED_DATE_RE = re.compile(
+    rf"\b(?:(\d{{1,2}})\s+({_MONTH})|({_MONTH})\s+(\d{{1,2}}))\b(?:\s*,?\s*(\d{{4}}))?")
 _LAST_RE = re.compile(r"^last (\d{1,4}) (minutes?|mins?|hours?|hrs?|days?)$")
 _CLOCK = r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?"
 _CLOCK_RANGE_RE = re.compile(rf"^{_CLOCK}\s*-\s*{_CLOCK}$")
@@ -57,7 +71,7 @@ class ResolvedRange:
 def _normalize(expression: str) -> str:
     text = expression.strip().lower()
     text = text.replace("–", "-").replace("—", "-")
-    text = re.sub(r"\b(between|from|this|the|during|for)\b", " ", text)
+    text = re.sub(r"\b(between|from|this|the|during|for|on|at|in|of|around)\b", " ", text)
     text = re.sub(r"\b(to|and|until|till|through)\b", "-", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -113,6 +127,20 @@ def _most_recent(span: tuple[timedelta, timedelta], now: datetime) -> tuple[date
     return _day_start(day) + span[0], _day_start(day) + span[1], day.isoformat()
 
 
+def _named_date(match: re.Match, now: datetime) -> date:
+    """A date written with a month name. Without a year, the most recent one."""
+    number, name = (match.group(1), match.group(2)) if match.group(1) else (match.group(4), match.group(3))
+    month, day_of_month = MONTHS[name], int(number)
+    year = int(match.group(5)) if match.group(5) else now.year
+    try:
+        resolved = date(year, month, day_of_month)
+    except ValueError as error:
+        raise TimeResolutionError("unresolvable", f"'{match.group(0)}' is not a real date.") from error
+    if not match.group(5) and resolved > now.date():
+        resolved = date(year - 1, month, day_of_month)
+    return resolved
+
+
 def resolve(expression: str, now: datetime) -> ResolvedRange:
     """Resolve `expression` against `now`, or raise TimeResolutionError."""
     text = _normalize(expression)
@@ -160,6 +188,9 @@ def _resolve_calendar(text: str, now: datetime, assumptions: list[str]) -> tuple
     if date_match := _DATE_RE.search(text):
         day = date.fromisoformat(date_match.group(1))
         remainder = _DATE_RE.sub(" ", text, count=1)
+    elif named := _NAMED_DATE_RE.search(text):
+        day = _named_date(named, now)
+        remainder = _NAMED_DATE_RE.sub(" ", text, count=1)
     else:
         for word, offset in (("today", 0), ("yesterday", -1), ("tomorrow", 1)):
             if re.search(rf"\b{word}\b", text):
@@ -173,9 +204,9 @@ def _resolve_calendar(text: str, now: datetime, assumptions: list[str]) -> tuple
         raise TimeResolutionError(
             "unresolvable",
             f"'{text}' is not a supported time expression. Supported forms: "
-            "today/yesterday (optionally with morning, afternoon, evening or night), "
-            "last N minutes/hours/days, a clock range such as '2 PM to 4 PM', "
-            "or two ISO 8601 timestamps.",
+            "today/yesterday, a date such as 2026-09-22 or 22 September, any of these "
+            "optionally with morning, afternoon, evening, night or a clock range such as "
+            "'2 PM to 4 PM'; last N minutes/hours/days; or two ISO 8601 timestamps.",
         )
 
     if day is None:

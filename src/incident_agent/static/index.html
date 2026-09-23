@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Incident Agent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%232f5fd0' d='M8 1 2 4v4.2c0 3.6 2.5 6.4 6 6.8 3.5-.4 6-3.2 6-6.8V4L8 1Zm.9 10.5H7.1V9.8h1.8v1.7Zm0-2.9H7.1V4.4h1.8v4.2Z'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #fbfbfc; --surface: #ffffff; --panel: #f4f5f7; --line: #e4e6ea;
@@ -106,6 +107,10 @@
     border: 1px solid var(--bad); color: var(--bad);
   }
   .meta { color: var(--faint); font-size: 12.5px; }
+  .flag {
+    display: inline-flex; align-items: center; gap: 7px; margin-bottom: 22px;
+    border: 1px solid var(--ok); color: var(--ok); border-radius: 999px; padding: 4px 13px; font-size: 13px;
+  }
 
   /* ---- trace ---- */
   details { border: 1px solid var(--line); border-radius: var(--radius); margin-top: 16px; background: var(--surface); }
@@ -189,6 +194,12 @@ const el = (tag, cls, text) => {
 
 const scroll = () => document.querySelector('main').scrollTo(0, 1e6);
 
+function flag(text) {
+  const node = el('div', 'flag');
+  node.append(el('span', 'dot'), document.createTextNode(text));
+  return node;
+}
+
 /* ---------- views ---------- */
 
 function show(view) {
@@ -201,7 +212,7 @@ function show(view) {
 }
 
 function suggestions() {
-  const [first, second] = info.services;
+  const [first, second] = info.busiest.length ? info.busiest : info.services;
   return [
     `Was anything wrong with ${first} yesterday afternoon?`,
     `Why did ${second || first} start failing? Investigate and tell me what to check next.`,
@@ -356,23 +367,6 @@ async function ask() {
   }
 }
 
-function ingestReport(report) {
-  const turn = el('div', 'turn');
-  turn.append(el('div', 'ask', 'Uploaded ' + report.filename));
-  turn.append(el('p', 'lede',
-    `${report.events.toLocaleString()} events loaded`
-    + (report.skipped ? `, ${report.skipped} line(s) skipped` : '')
-    + `, ${report.first_ts} to ${report.last_ts}.`));
-  block(turn, 'Services', report.services);
-  block(turn, 'Derived', [
-    'metrics: ' + (report.metrics.join(', ') || 'none'),
-    'deployments: ' + report.deployments,
-    'dependency edges: ' + report.dependencies,
-  ]);
-  block(turn, 'Skipped lines', report.problems);
-  return turn;
-}
-
 async function upload(file) {
   send.disabled = true;
   log.replaceChildren();
@@ -388,8 +382,8 @@ async function upload(file) {
     const report = await response.json();
     if (!response.ok) throw new Error(report.detail || response.statusText);
     sessionId = null;
-    log.replaceChildren(ingestReport(report));
     await refresh();
+    hero.firstChild.prepend(flag('Data ingested'));
   } catch (error) {
     hero.replaceChildren();
     log.replaceChildren(el('div', 'note', 'Ingest failed: ' + error.message));
@@ -412,8 +406,9 @@ async function refresh() {
   $('dot').className = 'dot' + (d ? '' : ' off');
   $('summary').textContent = d
     ? `${d.filename} · ${d.event_count.toLocaleString()} events · ${info.services.length} services `
-      + `· ${d.first_ts.slice(0, 10)} to ${d.last_ts.slice(0, 10)} · ${info.model}`
-    : `no dataset loaded · ${info.model}`;
+      + `· ${d.first_ts.slice(0, 10)} to ${d.last_ts.slice(0, 10)}`
+      + (d.skipped ? ` · ${d.skipped} skipped` : '')
+    : 'no dataset loaded';
   send.disabled = !d;
   input.disabled = !d;
   input.placeholder = d ? 'Ask about the data…' : 'Upload a log file to begin.';

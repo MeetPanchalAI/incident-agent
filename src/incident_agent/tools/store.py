@@ -98,6 +98,12 @@ class Store:
     def services(self) -> list[str]:
         return [r["name"] for r in self._db.execute("SELECT name FROM service ORDER BY name")]
 
+    def busiest_services(self, limit: int = 3) -> list[str]:
+        """Services that emit the most events. One discovered only as a call
+        target emits none, so it is never suggested as a starting point."""
+        return [r["service"] for r in self._db.execute(
+            "SELECT service, COUNT(*) AS n FROM event GROUP BY service ORDER BY n DESC LIMIT ?", (limit,))]
+
     # -- tool surfaces ----------------------------------------------------
 
     def get_metrics(self, service: str, metric: str, start: datetime, end: datetime) -> list[dict]:

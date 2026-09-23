@@ -23,7 +23,7 @@ uvicorn incident_agent.api:app --reload           # web UI at http://localhost:8
 python -m incident_agent.cli --ingest logs.jsonl  # load a dataset from the command line
 python -m incident_agent.cli                      # interactive
 python -m incident_agent.cli "your question"      # one question, then exit
-pytest                                            # 155 tests, no API key needed
+pytest                                            # 162 tests, no API key needed
 ```
 
 Upload a log file with the **Upload data** button, then ask questions. Nothing works until a
@@ -115,20 +115,20 @@ a database degrading underneath it.
 
 ## The dataset used here
 
-About 6,600 JSONL records, roughly 1.3 MB, covering 48 hours from 2026-09-22 to 2026-09-23 across
-ten services: `api-gateway`, `checkout-api`, `payment-service`, `catalog-service`, `auth-service`,
-`recommendation-service`, `notification-service`, `orders-worker`, `search-service` and
-`inventory-service`.
+`production_data.jsonl`: 6,635 events over 48 hours, 2026-09-22 to 2026-09-23. Ten services emit
+events — `api-gateway`, `checkout-api`, `payment-service`, `catalog-service`, `auth-service`,
+`recommendation-service`, `notification-service`, `orders-worker`, `search-service`,
+`inventory-service` — and nine more appear as call targets (`orders-db`, `auth-db`, `catalog-db`,
+`inventory-db`, `redis`, `payment-gateway`, `notification-provider`, `search-backend`,
+`external-bank-network`), giving 19 in the dependency graph.
 
-It is not random traffic. Each of the situations in the table above is present, plus independent
-incidents in search, auth and inventory, cross-service traces
-(`api-gateway -> checkout-api -> orders-db`), and normal background noise: latency variation,
-occasional 4xx/5xx/429, several deployments.
+It is not random traffic. Every situation in the table above is present, plus independent incidents
+in search, auth and inventory, and ordinary background noise: latency variation, occasional
+4xx/5xx/429, several deployments.
 
-It also contains a few deliberately broken records — a missing message, an invalid timestamp, an
-invalid log level — to exercise ingest validation. Ingest skips them, counts them, and shows the
-reason for each; it does not silently drop them. The ingest report is the source of truth for what
-actually loaded.
+Three lines are deliberately broken — a missing message, an invalid timestamp, an invalid log level.
+Ingest skips them, counts them and gives a reason for each. The ingest report, not this paragraph,
+is the source of truth for what loaded.
 
 ## Configuration
 
@@ -178,12 +178,12 @@ src/incident_agent/
     executor.py     the guardrail pipeline for one tool call
     summaries.py    deterministic summaries, including spike detection
     time_resolver.py  time expressions to UTC ranges
-tests/              155 tests, no API key required
+tests/              162 tests, no API key required
 ```
 
 ## Tests
 
-`pytest` runs 155 tests against a scripted fake model. They are deterministic, free, and need no
+`pytest` runs 162 tests against a scripted fake model. They are deterministic, free, and need no
 network. `tests/sample_data.py` builds the dataset they share.
 
 | File | Covers |

@@ -43,12 +43,13 @@ def test_health_describes_the_loaded_dataset(client):
     assert body["status"] == "ok"
     assert body["dataset"]["filename"] == "sample.jsonl"
     assert "checkout-api" in body["services"]
+    assert body["busiest"][0] == "checkout-api"  # the service with the most events
 
 
 def test_health_reports_no_dataset_when_nothing_is_loaded(blank):
     body = blank.get("/health").json()
     assert body["dataset"] is None
-    assert body["services"] == []
+    assert body["services"] == [] and body["busiest"] == []
 
 
 def test_the_page_is_served(client):

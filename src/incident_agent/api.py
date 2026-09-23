@@ -66,6 +66,7 @@ def health() -> dict:
             "configured": bool(settings.api_key) or LLM_OVERRIDE is not None,
             "dataset": store.info(),
             "services": store.services(),
+            "busiest": store.busiest_services(),
         }
     finally:
         store.close()
