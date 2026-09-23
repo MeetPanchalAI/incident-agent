@@ -184,7 +184,7 @@ needs; it just does not read the transcript back to you.
 ## Layout
 
 ```
-prompts/            system.md and the four messages the loop sends the model
+prompts/            every prompt: system.md, the four loop messages, and judge.md
 evaluations/        the twelve scenarios, the runner and the judge
 src/incident_agent/
   agent.py          the loop: steps, budgets, the final response
