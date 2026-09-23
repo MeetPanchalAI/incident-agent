@@ -61,6 +61,11 @@ class AgentService:
         self.executor = ToolExecutor(settings, store)
         self.tools = [spec.openai_schema() for spec in TOOL_SPECS] + [submit_response_schema()]
 
+    def close(self) -> None:
+        """Release the database connection. The long-lived API agent never needs
+        this; a caller that builds one agent per scenario does."""
+        self.store.close()
+
     def new_session(self) -> Session:
         session = Session()
         session.messages.append({"role": "system", "content": self.prompts.system})

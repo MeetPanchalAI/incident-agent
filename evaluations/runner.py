@@ -64,6 +64,8 @@ def run_scenario(scenario: dict, settings: Settings, llm=None) -> dict:
             })
     except Exception as failure:  # a broken run is a result, not a crash
         error = f"{type(failure).__name__}: {failure}"
+    finally:
+        agent.close()
 
     cited: set[str] = set()
     for turn in turns:
@@ -159,12 +161,18 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--out", type=Path, help="write the full report as JSON")
     args = parser.parse_args(argv)
 
-    settings = load_settings()
-    print(f"{'id':<5} {'res':<5} {'tools':<6} {'score':<5} {'scenario':<34} notes")
-    print("-" * 110)
+    header_shown = False
+
+    def show(result: dict) -> None:
+        nonlocal header_shown
+        if not header_shown:
+            print(f"{'id':<5} {'res':<5} {'tools':<6} {'score':<5} {'scenario':<34} notes")
+            print("-" * 110)
+            header_shown = True
+        print(report_line(result))
+
     try:
-        report = run_suite(settings, args.scenario, use_judge=not args.no_judge,
-                           on_result=lambda result: print(report_line(result)))
+        report = run_suite(load_settings(), args.scenario, use_judge=not args.no_judge, on_result=show)
     except EvalError as error:
         print(error)
         return 2

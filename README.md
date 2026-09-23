@@ -6,8 +6,9 @@ failing tools, and reports observed facts separately from its own hypotheses.
 
 You upload a log file. The agent answers questions about it.
 
-- `DESIGN.md` — architecture and the reasoning behind it
+- `DESIGN.md` — architecture, the reasoning behind it, and its limits
 - `AI_USAGE.md` — how AI coding assistants were used
+- `evaluations/scenarios.json` — the twelve scenarios and what correct behaviour is
 
 ## Setup
 
@@ -24,7 +25,7 @@ python -m incident_agent.cli --ingest logs.jsonl  # load a dataset from the comm
 python -m incident_agent.cli                      # interactive
 python -m incident_agent.cli "your question"      # one question, then exit
 python -m evaluations.runner                      # the twelve evaluation scenarios
-pytest                                            # 212 tests, no API key needed
+pytest                                            # 214 tests, no API key needed
 ```
 
 Upload a log file with the **Upload data** button, then ask questions. Nothing works until a
@@ -195,7 +196,7 @@ src/incident_agent/
   config.py         every tunable parameter, read from the environment
   state.py          conversations, run logs and evaluation results
   cli.py            interactive command line
-  api.py            five HTTP endpoints
+  api.py            the HTTP API
   static/index.html the web UI, no build step
   tools/
     ingest.py       parse a log file and derive the tool surfaces from it
@@ -204,12 +205,12 @@ src/incident_agent/
     executor.py     the guardrail pipeline for one tool call
     summaries.py    deterministic summaries, including spike detection
     time_resolver.py  time expressions to UTC ranges
-tests/              212 tests, no API key required
+tests/              214 tests, no API key required
 ```
 
 ## Tests
 
-`pytest` runs 212 tests against a scripted fake model. They are deterministic, free, and need no
+`pytest` runs 214 tests against a scripted fake model. They are deterministic, free, and need no
 network. `tests/sample_data.py` builds the dataset they share.
 
 | File | Covers |

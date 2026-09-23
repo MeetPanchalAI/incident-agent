@@ -30,6 +30,10 @@ from .time_resolver import TimeResolutionError, resolve, validate_range
 
 NON_PRODUCTIVE = ("invalid_arguments", "duplicate", "budget_exceeded")
 
+# Shared by every executor. Its only job is to put a timeout around a call, and
+# a pool per agent would accumulate threads across an evaluation run.
+_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="tool")
+
 
 @dataclass
 class Budget:
@@ -81,7 +85,6 @@ class ToolExecutor:
     def __init__(self, settings: Settings, store: Store) -> None:
         self.settings = settings
         self.store = store
-        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tool")
 
     # -- pipeline ----------------------------------------------------------
 
@@ -136,7 +139,8 @@ class ToolExecutor:
         if policy_error := self._policy_error(call.name, args_model, session):
             return self._record(session, call, args, "invalid_arguments", policy_error)
 
-        # 5-7. execute, then validate and classify the result
+        # 5-8. execute with a timeout and one retry, validate the result,
+        #      classify it as ok or empty, summarise it and record it
         return self._execute(call, args_model, args, session)
 
     def _unknown_service(self, args_model) -> str | None:
@@ -233,7 +237,7 @@ class ToolExecutor:
                 args_model.service, args_model.start_time, args_model.end_time),
             "get_service_dependencies": lambda: self.store.get_service_dependencies(args_model.service),
         }
-        return self._pool.submit(calls[name]).result(timeout=self.settings.budgets.tool_timeout_s)
+        return _POOL.submit(calls[name]).result(timeout=self.settings.budgets.tool_timeout_s)
 
     def _shape(self, name: str, args_model, raw):
         """Validate the backend's payload and summarise it deterministically."""

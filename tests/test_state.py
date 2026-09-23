@@ -146,3 +146,15 @@ def test_a_crash_inside_a_turn_is_recorded_before_it_propagates(settings, state_
     run = recent_runs(state_db, kind="turn")[0]
     assert run["status"] == "error"
     assert "turn.failed" in events(state_db, run["id"])
+
+
+def test_an_unexpected_ingest_failure_is_recorded_too(db, tmp_path, monkeypatch):
+    """Only a refusal used to close the run; anything else left it open."""
+    import incident_agent.tools.ingest as module
+
+    monkeypatch.setattr(module, "_derive", lambda db: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        ingest([_line()], tmp_path / "d.db", "logs.jsonl", db)
+    [run] = recent_runs(db)
+    assert run["status"] == "error" and run["ended_at"] is not None
+    assert "failed: RuntimeError" in run["summary"]

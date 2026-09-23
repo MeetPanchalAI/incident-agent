@@ -10,6 +10,7 @@ from tests.conftest import WINDOW, submit
 
 METRICS = ("get_metrics", {"service": "checkout-api", "metric": "error_rate", **WINDOW})
 DEPLOYS = ("get_deployments", {"service": "checkout-api", **WINDOW})
+DEPS = ("get_service_dependencies", {"service": "checkout-api"})
 LOGS = ("search_logs", {"service": "checkout-api", "query": "timeout", **WINDOW})
 DONE = ("submit_response", submit())
 
@@ -198,3 +199,17 @@ def test_both_turns_of_a_follow_up_share_one_session(settings):
     result = run_scenario(scenario, settings, llm=FakeLLM([[METRICS], [DONE], [DONE]]))
     assert len(result["turns"]) == 2
     assert result["turns"][1]["trace"] == []  # answered from the first turn's evidence
+
+
+def test_running_many_scenarios_does_not_accumulate_threads_or_connections(settings):
+    """One pool is shared, and each scenario's agent releases its database."""
+    import threading
+
+    from incident_agent.llm import FakeLLM
+
+    scenario = {"id": "E12", "title": "t", "question": "what does checkout-api depend on?",
+                "action": "No incident note.", "required_tools": []}
+    before = threading.active_count()
+    for _ in range(6):
+        run_scenario(scenario, settings, llm=FakeLLM([[DEPS], [("submit_response", submit())]]))
+    assert threading.active_count() <= before + 8  # the shared pool, not six pools

@@ -135,10 +135,13 @@ def ingest(lines: Iterable[str], db_path: str | Path, filename: str,
              report.skipped, report.first_ts, report.last_ts),
         )
         db.commit()
-    except IngestError as error:
+    except Exception as error:
         if log:
-            log.event("ingest.failed", str(error), level="error")
-            log.finish("refused: no usable events", status="error")
+            refused = isinstance(error, IngestError)
+            log.event("ingest.failed", str(error) if refused else f"{type(error).__name__}: {error}",
+                      level="error")
+            log.finish("refused: no usable events" if refused else f"failed: {type(error).__name__}",
+                       status="error")
         raise
     finally:
         db.close()

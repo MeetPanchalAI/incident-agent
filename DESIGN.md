@@ -34,12 +34,11 @@ README.md lists every variable.
 
 ## Why this architecture
 
-A hand-written loop, not a framework. `agent.py` is 161 lines including the docstrings.
+A hand-written loop, not a framework.
 
-The loop is the part of this exercise being judged. A framework would hide it, and would make the
-budgets, the retry policy and the forced final answer harder to control and harder to explain. With
-six tools and one control tool there is nothing for a framework to manage that the loop does not
-already manage.
+The loop is the part being judged. A framework would hide it, and would make the budgets, the retry
+policy and the forced final answer harder to control and harder to explain. With six tools and one
+control tool there is nothing for a framework to manage that the loop does not already manage.
 
 A planner/executor split or a multi-agent design was not used. Neither adds capability here: there
 is one investigation, one evidence ledger and one answer. Both would add parts to explain and
@@ -554,3 +553,25 @@ them anyway — a guardrail that is never exercised is a guardrail nobody notice
 - **Evaluations in CI**, with the pass rate tracked over time, so a prompt change that costs accuracy
   is visible before it ships.
 - **Entailment checking** on citations, closing limitation 1.
+
+## Where each requirement is answered
+
+| The brief asks for | Here |
+|---|---|
+| Dynamic tool selection | How the agent chooses a tool |
+| Multi-step investigation | The agent loop; scenario E04 asserts a call whose arguments came from an earlier result |
+| Evidence-based output, facts separated from hypotheses | The final response; What enforces what |
+| Recommended next actions | The final response |
+| Conversation state and follow-ups | Conversation state; State: what the product remembers |
+| Tool timeouts and temporary failures | Handling poor or contradictory tool responses |
+| Empty or malformed responses | Handling poor or contradictory tool responses |
+| Preventing repeated or infinite loops | Preventing loops and runaway cost |
+| Validating tool arguments | The agent loop (the executor pipeline); Time |
+| Invalid or nonsensical time ranges | Time |
+| Not executing dangerous actions | Actions and dangerous operations |
+| Why this architecture | Why this architecture |
+| How loops and runaway costs are prevented | Preventing loops and runaway cost |
+| How poor or contradictory responses are handled | Handling poor or contradictory tool responses |
+| How conversation state is maintained | Conversation state |
+| What would change for production scale | What would change for production scale |
+| Ten or more evaluation scenarios | `evaluations/scenarios.json` (twelve); Evaluation |
