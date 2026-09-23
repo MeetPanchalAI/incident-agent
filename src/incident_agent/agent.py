@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 from .config import Settings
 from .llm import LLMClient, tool_result_item
+from .logs import Recorder
 from .prompts import Prompts
 from .report import FinalOutcome, build_from_ledger, finalize, finalize_unverified, submit_response_schema
 from .session import Session
@@ -68,6 +69,29 @@ class AgentService:
     # -- one turn ----------------------------------------------------------
 
     def run_turn(self, session: Session, user_message: str) -> TurnResult:
+        """One user turn, recorded as one run in the log database."""
+        log = Recorder(self.settings.log_db_path, "turn", user_message)
+        log.event("turn.start", user_message, session=session.id, turn=session.turn + 1)
+        try:
+            result = self._run_turn(session, user_message, log)
+        except Exception as error:
+            log.event("turn.failed", f"{type(error).__name__}: {error}", level="error")
+            log.finish(f"failed: {type(error).__name__}", status="error")
+            raise
+        response = result.outcome.response
+        log.event(
+            "turn.done", f"{response.response_type}: {response.message[:120]}",
+            level="warn" if result.outcome.unverified else "info",
+            steps=result.steps, model_calls=result.llm_calls, tool_calls=len(result.trace),
+            facts=len(response.observed_facts), hypotheses=len(response.hypotheses),
+            unverified=result.outcome.unverified,
+        )
+        log.finish(
+            f"{response.response_type} · {len(result.trace)} tool calls · {result.llm_calls} model calls"
+            + (" · unverified" if result.outcome.unverified else ""))
+        return result
+
+    def _run_turn(self, session: Session, user_message: str, log: Recorder) -> TurnResult:
         session.start_turn(user_message)
         budget = Budget(self.settings.budgets)
         llm_calls = 0
@@ -77,6 +101,8 @@ class AgentService:
             llm_calls += 1
             budget.use_step()
             session.messages.extend(reply.items)
+            log.event("model.step", ", ".join(c.name for c in reply.tool_calls) or "no tool call",
+                      step=budget.steps_used)
 
             if not reply.tool_calls:
                 budget.unproductive_streak += 1
@@ -90,11 +116,15 @@ class AgentService:
                     self._reply_to(session, call, payload)
                     if outcome is not None:
                         return self._result(outcome, session, llm_calls, budget)
+                    log.event("response.rejected", payload["error"][:200], level="warn")
                     budget.observe("invalid_arguments")
                 else:
                     observation = self.executor.run(call, session, budget, batch)
+                    self._log_tool(log, observation)
                     self._reply_to(session, call, observation.envelope())
 
+        reason = "step budget spent" if not budget.has_steps() else "no progress in three calls"
+        log.event("turn.forced_final", f"Stopping early: {reason}.", level="warn")
         return self._force_final(session, budget, llm_calls)
 
     def _finalize(self, call: ToolCall, session: Session, budget: Budget, alone: bool) -> tuple[FinalOutcome | None, dict]:
@@ -133,6 +163,16 @@ class AgentService:
         return self._result(outcome, session, llm_calls, budget, stopped_early=True)
 
     # -- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _log_tool(log: Recorder, o) -> None:
+        args = " ".join(f"{k}={v}" for k, v in o.args.items() if k in ("service", "metric", "query", "expression"))
+        log.event(
+            "tool.call", f"{o.tool}({args}) -> {o.status}",
+            level="info" if o.citable else "warn",
+            observation=o.id, tool=o.tool, status=o.status,
+            attempts=o.attempts, ms=o.duration_ms,
+        )
 
     @staticmethod
     def _reply_to(session: Session, call: ToolCall, payload: dict) -> None:

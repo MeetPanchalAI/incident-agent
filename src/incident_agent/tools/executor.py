@@ -7,6 +7,7 @@ the agent route around a broken tool instead of stopping.
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
@@ -85,7 +86,9 @@ class ToolExecutor:
     # -- pipeline ----------------------------------------------------------
 
     def run(self, call: ToolCall, session: Session, budget: Budget, batch: Batch) -> Observation:
+        started = time.monotonic()
         observation = self._run(call, session, budget, batch)
+        observation.duration_ms = round((time.monotonic() - started) * 1000)
         budget.observe(observation.status)
         return observation
 

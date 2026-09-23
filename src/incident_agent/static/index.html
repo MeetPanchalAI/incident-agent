@@ -127,6 +127,27 @@
   .s-ok { color: var(--ok); } .s-empty { color: var(--faint); }
   .s-error, .s-timeout, .s-invalid_arguments, .s-duplicate, .s-budget_exceeded { color: var(--warn); }
 
+  /* ---- monitoring ---- */
+  .runs { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .runs th {
+    text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--faint); font-weight: 600; padding: 0 12px 7px;
+  }
+  .runs td { padding: 8px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+  .runs tr.run { cursor: pointer; }
+  .runs tr.run:hover td { background: var(--panel); }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .kind {
+    font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; padding: 1px 7px;
+    border-radius: 10px; border: 1px solid var(--line); color: var(--muted);
+  }
+  .lines { padding: 0 !important; }
+  .lines table { font-size: 12px; background: var(--panel); }
+  .lines td { border-top: 1px solid var(--line); padding: 5px 12px; }
+  .l-warn { color: var(--warn); } .l-error { color: var(--bad); }
+  .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .toolbar h2 { font-size: 17px; font-weight: 600; margin: 0; flex: 1; }
+
   /* ---- evaluation ---- */
   .card { border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 24px; background: var(--surface); }
   .card h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
@@ -144,6 +165,7 @@
     <nav>
       <button class="tab" id="tab-chat" aria-selected="true">Chat</button>
       <button class="tab" id="tab-eval" aria-selected="false">Evaluation</button>
+      <button class="tab" id="tab-mon" aria-selected="false">Monitoring</button>
     </nav>
     <span class="grow"></span>
     <input type="file" id="file" accept=".jsonl,.json,.log,.txt" hidden>
@@ -156,6 +178,13 @@
 <main>
   <div class="wrap">
     <div id="chat"><div id="log"></div><div id="hero"></div></div>
+    <div id="mon" hidden>
+      <div class="toolbar">
+        <h2>Runs</h2>
+        <button class="btn" id="mon-refresh">Refresh</button>
+      </div>
+      <div id="runs"></div>
+    </div>
     <div id="eval" hidden>
       <div class="card">
         <h2>Evaluation</h2>
@@ -203,12 +232,66 @@ function flag(text) {
 /* ---------- views ---------- */
 
 function show(view) {
-  $('chat').hidden = view !== 'chat';
-  $('eval').hidden = view !== 'eval';
-  $('tab-chat').setAttribute('aria-selected', String(view === 'chat'));
-  $('tab-eval').setAttribute('aria-selected', String(view === 'eval'));
+  ['chat', 'eval', 'mon'].forEach(name => {
+    $(name).hidden = name !== view;
+    $('tab-' + name).setAttribute('aria-selected', String(name === view));
+  });
   document.querySelector('footer').hidden = view !== 'chat';
   if (view === 'chat' && !input.disabled) input.focus();
+  if (view === 'mon') loadRuns();
+}
+
+/* ---------- monitoring ---------- */
+
+const clock = iso => (iso || '').slice(11, 19);
+const secs = ms => ms == null ? '' : (ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms');
+
+async function loadRuns() {
+  const {runs} = await (await fetch('/api/runs?limit=60')).json();
+  const table = el('table', 'runs');
+  const head = table.createTHead().insertRow();
+  ['Time', 'Kind', 'Status', 'Took', 'Summary'].forEach(name => {
+    const cell = document.createElement('th');
+    cell.textContent = name;
+    head.append(cell);
+  });
+  const body = table.createTBody();
+  if (!runs.length) {
+    body.insertRow().insertCell().append(el('span', 'meta', 'Nothing has run yet.'));
+  }
+  runs.forEach(run => {
+    const row = body.insertRow();
+    row.className = 'run';
+    row.insertCell().append(el('span', 'mono', clock(run.started_at)));
+    row.insertCell().append(el('span', 'kind', run.kind));
+    row.insertCell().append(el('span', run.status === 'error' ? 'l-error' : '', run.status || 'running'));
+    row.insertCell().append(el('span', 'mono', secs(run.duration_ms)));
+    row.insertCell().textContent = run.summary || run.label || '';
+    row.addEventListener('click', () => toggleRun(row, run.id));
+  });
+  $('runs').replaceChildren(table);
+}
+
+async function toggleRun(row, id) {
+  const next = row.nextElementSibling;
+  if (next && next.dataset.detail === id) { next.remove(); return; }
+  const {logs} = await (await fetch('/api/runs/' + id)).json();
+  const holder = row.parentNode.insertRow(row.rowIndex);
+  holder.dataset.detail = id;
+  const cell = holder.insertCell();
+  cell.colSpan = 5;
+  cell.className = 'lines';
+  const inner = el('table');
+  logs.forEach(line => {
+    const r = inner.insertRow();
+    r.insertCell().append(el('span', 'mono', clock(line.at)));
+    r.insertCell().append(el('span', 'mono l-' + line.level, line.event));
+    const text = r.insertCell();
+    text.append(el('div', null, line.message));
+    if (line.data) text.append(el('div', 'cite',
+      Object.entries(line.data).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('  ')));
+  });
+  cell.append(inner);
 }
 
 function suggestions() {
@@ -420,6 +503,8 @@ async function refresh() {
 
 $('tab-chat').addEventListener('click', () => show('chat'));
 $('tab-eval').addEventListener('click', () => show('eval'));
+$('tab-mon').addEventListener('click', () => show('mon'));
+$('mon-refresh').addEventListener('click', loadRuns);
 $('upload').addEventListener('click', () => $('file').click());
 $('file').addEventListener('change', event => {
   if (event.target.files.length) upload(event.target.files[0]);

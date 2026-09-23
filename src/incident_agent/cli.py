@@ -34,9 +34,9 @@ def _print_trace(trace: list[dict]) -> None:
         print(f"  {row['observation_id']}  {row['status']:<17}{attempts} {row['tool']}({args})")
 
 
-def _load(path: str, db_path) -> bool:
+def _load(path: str, db_path, log_db) -> bool:
     try:
-        report = ingest_file(path, db_path)
+        report = ingest_file(path, db_path, log_db)
     except (IngestError, OSError) as error:
         print(error)
         return False
@@ -58,7 +58,7 @@ def main(argv: list[str]) -> int:
         if len(argv) < 2:
             print("Usage: python -m incident_agent.cli --ingest <path>")
             return 2
-        return 0 if _load(argv[1], settings.db_path) else 1
+        return 0 if _load(argv[1], settings.db_path, settings.log_db_path) else 1
 
     store = Store(settings.db_path)
     empty = store.is_empty()
@@ -106,7 +106,7 @@ def main(argv: list[str]) -> int:
             print("New session.")
             continue
         if line.startswith("/ingest "):
-            if _load(line.split(maxsplit=1)[1].strip(), settings.db_path):
+            if _load(line.split(maxsplit=1)[1].strip(), settings.db_path, settings.log_db_path):
                 service = build_service(settings)
                 session = service.new_session()
             continue

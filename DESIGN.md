@@ -427,6 +427,51 @@ the agent cannot take a destructive action at all. A `rollback_deployment` tool 
 approval checkpoint — the loop pausing, returning `pending_action`, and executing only after the
 user confirms that exact service and version — is the first thing to add next.
 
+## Run logs
+
+Every workflow opens a run and writes ordered events to it: an ingest, an agent turn, an evaluation
+run. Two tables — `run` (kind, start, duration, status, one-line summary) and `log` (sequence,
+level, event name, message, a small JSON payload).
+
+The events are chosen so that one run reads as an account of what the system did, and nothing more:
+
+| Event | When |
+|---|---|
+| `turn.start` / `turn.done` | the question, then the response type and the counts |
+| `model.step` | which tools the model asked for at that step |
+| `tool.call` | one per call: name, arguments that matter, status, attempts, duration |
+| `response.rejected` | a final response failed validation and went back for repair |
+| `turn.forced_final` | the loop stopped early, and whether it was the budget or no progress |
+| `ingest.start` / `parsed` / `derived` / `failed` | what was read, what was skipped, what was derived |
+| `eval.start` / `scenario` / `done` | per-scenario pass, critical flag, coverage and scores |
+
+Two decisions. **Failures are recorded before they propagate** — a turn that raises still leaves a
+run with status `error` and a `turn.failed` event, because a crash with no trace is the one thing
+you cannot debug afterwards. And **logs live in a separate database**, because ingesting replaces
+the dataset, and the record of what happened has to survive that.
+
+## Evaluation
+
+Twelve scenarios against the ingested dataset. The split in how they are scored is the design:
+
+**Deterministic checks for facts about the run.** Were the required tools called — in any order,
+since the agent is meant to be adaptive and a fixed sequence would punish it for investigating
+well. Did an invalid range reach the backend. Was a transient timeout retried and recovered. Was
+malformed output kept out of the evidence. Did a follow-up reuse the existing investigation. Was a
+note created where none was wanted. Wasted calls are counted and reported rather than failed,
+because "spent two extra calls" is information, not a defect.
+
+**An LLM judge only for what needs reading**: factual correctness, grounding, uncertainty about
+causation, completeness, actionability — 0, 1 or 2 each. It can also raise a critical error.
+
+A scenario passes when nothing critical happened, every required tool was called, every
+deterministic check held, and no judge score is 0.
+
+One thing worth noting: several of the critical errors the brief cares about are already impossible
+rather than merely checked. A failed call cannot be cited because `finalize()` rejects it, and an
+invented metric cannot exist because the store has no rows to invent from. The evaluation asserts
+them anyway — a guardrail that is never exercised is a guardrail nobody notices has broken.
+
 ## Limitations
 
 1. **Citation checking proves provenance, not entailment.** Code verifies that `obs_004` exists and
@@ -445,11 +490,13 @@ user confirms that exact service and version — is the first thing to add next.
    that two observations conflict in meaning.
 6. **Code cannot force the use of `resolve_time_range`.** The model can pass timestamps it worked out
    itself. The validator still bounds them.
-7. **Sessions are in memory.** The dataset is persistent; conversations are not, and restarting the
-   server loses them.
-8. **The evaluation suite does not exist yet.** The previous one was written against mock fixtures
-   that this design deleted, so it was removed rather than left pointing at data that had gone. It
-   is being rebuilt against an ingested dataset.
+7. **Sessions are in memory.** The dataset and the run logs are persistent; conversations are not,
+   and restarting the server loses them.
+8. **The judge is a single model call with no second opinion.** It sees the question, the expected
+   answer and the agent's response, and its scores are as variable as any model's. It is there to
+   catch what deterministic checks cannot read, not to be an authority.
+9. **The evaluation tab does not run anything yet.** The suite runs from the command line; the tab
+   describes what it will do.
 
 ## What would change for production scale
 
@@ -461,8 +508,8 @@ user confirms that exact service and version — is the first thing to add next.
   once a conversation outgrows the context window.
 - **Cost controls per tenant**, not just per turn, with the token usage already returned by the
   adapter recorded against them.
-- **Tracing.** One structured record per turn — steps, tool calls, latency, tokens, cost — is the
-  next thing to add, and the trace already returned to the UI is most of it.
+- **Tracing.** The run log is most of a trace already; what it lacks is token counts and cost per
+  turn, and a way to ship the events somewhere other than SQLite.
 - **Auth, RBAC and an audit log**, which become necessary the moment any tool can change something.
 - **Approval workflow** for mutating actions, as described above.
 - **Evaluations in CI**, with the pass rate tracked over time, so a prompt change that costs accuracy

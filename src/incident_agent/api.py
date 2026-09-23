@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from . import AgentService, build_service, load_settings
 from .agent import describe_dataset
 from .llm import LLMClient
+from .logs import recent_runs, run_logs
 from .session import Session
 from .tools.ingest import IngestError, ingest
 from .tools.store import Store
@@ -80,11 +81,21 @@ async def ingest_upload(file: UploadFile) -> dict:
         raise HTTPException(413, f"File is larger than {MAX_UPLOAD_MB} MB.")
     try:
         report = ingest(raw.decode("utf-8", "replace").splitlines(),
-                        settings.db_path, file.filename or "upload.jsonl")
+                        settings.db_path, file.filename or "upload.jsonl", settings.log_db_path)
     except IngestError as error:
         raise HTTPException(400, str(error)) from error
     _reload()
     return report.to_dict()
+
+
+@app.get("/api/runs")
+def runs(limit: int = 50, kind: str | None = None) -> dict:
+    return {"runs": recent_runs(settings.log_db_path, limit=min(limit, 200), kind=kind)}
+
+
+@app.get("/api/runs/{run_id}")
+def run_detail(run_id: str) -> dict:
+    return {"logs": run_logs(settings.log_db_path, run_id)}
 
 
 @app.post("/api/reset")

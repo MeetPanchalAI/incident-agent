@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from ..config import format_iso, parse_iso
+from ..logs import Recorder
 from .store import connect
 
 BATCH = 5000
@@ -82,9 +83,13 @@ def _parse_line(line: str) -> dict:
     }
 
 
-def ingest(lines: Iterable[str], db_path: str | Path, filename: str) -> IngestReport:
+def ingest(lines: Iterable[str], db_path: str | Path, filename: str,
+           log_db: str | Path | None = None) -> IngestReport:
     """Replace the dataset with the contents of `lines`."""
     report = IngestReport(filename=filename)
+    log = Recorder(log_db, "ingest", filename) if log_db else None
+    if log:
+        log.event("ingest.start", f"Replacing the dataset with {filename}.")
     db = connect(db_path)
     try:
         for table in ("dataset", "event", "metric_point", "deployment", "dependency", "service"):
@@ -105,6 +110,10 @@ def ingest(lines: Iterable[str], db_path: str | Path, filename: str) -> IngestRe
                 )
             report.events += len(batch)
 
+        if log:
+            log.event("ingest.parsed", f"{report.events} events parsed, {report.skipped} skipped.",
+                      level="warn" if report.skipped else "info",
+                      events=report.events, skipped=report.skipped, problems=report.problems[:5])
         if report.events == 0:
             raise IngestError(
                 f"No usable events in {filename}. {report.skipped} line(s) were skipped. "
@@ -113,6 +122,12 @@ def ingest(lines: Iterable[str], db_path: str | Path, filename: str) -> IngestRe
 
         _derive(db)
         _summarise(db, report)
+        if log:
+            log.event("ingest.derived",
+                      f"{len(report.services)} services, metrics {', '.join(report.metrics)}, "
+                      f"{report.deployments} deployments, {report.dependencies} dependency edges.",
+                      services=report.services, metrics=report.metrics,
+                      deployments=report.deployments, dependencies=report.dependencies)
         db.execute(
             "INSERT INTO dataset (filename, ingested_at, event_count, skipped, first_ts, last_ts) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -120,15 +135,23 @@ def ingest(lines: Iterable[str], db_path: str | Path, filename: str) -> IngestRe
              report.skipped, report.first_ts, report.last_ts),
         )
         db.commit()
+    except IngestError as error:
+        if log:
+            log.event("ingest.failed", str(error), level="error")
+            log.finish("refused: no usable events", status="error")
+        raise
     finally:
         db.close()
+    if log:
+        log.finish(f"{report.events} events, {report.skipped} skipped, "
+                   f"{report.first_ts} to {report.last_ts}")
     return report
 
 
-def ingest_file(path: str | Path, db_path: str | Path) -> IngestReport:
+def ingest_file(path: str | Path, db_path: str | Path, log_db: str | Path | None = None) -> IngestReport:
     path = Path(path)
     with path.open(encoding="utf-8") as handle:
-        return ingest(handle, db_path, path.name)
+        return ingest(handle, db_path, path.name, log_db)
 
 
 def _events(lines: Iterable[str], report: IngestReport) -> Iterator[dict]:

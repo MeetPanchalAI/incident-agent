@@ -23,7 +23,7 @@ def client(monkeypatch, tmp_path, dataset):
     # A private copy: these tests ingest, and must not disturb the shared dataset.
     own = tmp_path / "api.db"
     own.write_bytes(pathlib.Path(dataset).read_bytes())
-    monkeypatch.setattr(api, "settings", Settings(now=NOW, db_path=own))
+    monkeypatch.setattr(api, "settings", Settings(now=NOW, db_path=own, log_db_path=tmp_path / "logs.db"))
     monkeypatch.setattr(api, "LLM_OVERRIDE", FakeLLM([[METRICS], [DONE], [DONE], [DONE]]))
     api._reload()
     return TestClient(api.app)
@@ -32,7 +32,8 @@ def client(monkeypatch, tmp_path, dataset):
 @pytest.fixture
 def blank(monkeypatch, tmp_path):
     """A client with no dataset ingested."""
-    monkeypatch.setattr(api, "settings", Settings(now=NOW, db_path=tmp_path / "empty.db"))
+    monkeypatch.setattr(api, "settings",
+                        Settings(now=NOW, db_path=tmp_path / "empty.db", log_db_path=tmp_path / "logs.db"))
     monkeypatch.setattr(api, "LLM_OVERRIDE", FakeLLM([]))
     api._reload()
     return TestClient(api.app)
@@ -125,3 +126,18 @@ def test_uploading_replaces_the_dataset_and_clears_sessions(client):
     assert _upload(client, good).status_code == 200
     assert client.get("/health").json()["services"] == ["api"]
     assert first["session_id"] not in api._sessions
+
+
+def test_the_monitoring_endpoints_report_what_ran(client):
+    client.post("/api/chat", json={"message": "anything wrong with checkout-api?"})
+    runs = client.get("/api/runs").json()["runs"]
+    assert [r["kind"] for r in runs] == ["turn"]
+    logs = client.get(f"/api/runs/{runs[0]['id']}").json()["logs"]
+    assert [line["event"] for line in logs][0] == "turn.start"
+    assert any(line["event"] == "tool.call" for line in logs)
+
+
+def test_an_upload_is_recorded_as_an_ingest_run(blank):
+    good = json.dumps({"ts": "2026-09-22T14:00:00Z", "service": "api", "level": "INFO", "message": "ok"})
+    _upload(blank, good)
+    assert [r["kind"] for r in blank.get("/api/runs?kind=ingest").json()["runs"]] == ["ingest"]

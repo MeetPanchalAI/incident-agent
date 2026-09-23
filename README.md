@@ -23,7 +23,8 @@ uvicorn incident_agent.api:app --reload           # web UI at http://localhost:8
 python -m incident_agent.cli --ingest logs.jsonl  # load a dataset from the command line
 python -m incident_agent.cli                      # interactive
 python -m incident_agent.cli "your question"      # one question, then exit
-pytest                                            # 162 tests, no API key needed
+python -m evaluations.runner                      # the twelve evaluation scenarios
+pytest                                            # 197 tests, no API key needed
 ```
 
 Upload a log file with the **Upload data** button, then ask questions. Nothing works until a
@@ -142,6 +143,7 @@ Every tunable parameter is in `.env`. `.env.example` is the same file with notes
 | `AGENT_REASONING_EFFORT` | `low` | `minimal`/`low`/`medium`/`high`. Only sent when set. |
 | `AGENT_NOW` | `data` | `data` = the last event in the dataset. A fixed ISO timestamp pins it instead. |
 | `AGENT_DB_PATH` | `data/incident.db` | Where the ingested dataset is stored. |
+| `AGENT_LOG_DB_PATH` | `data/logs.db` | Where run logs are stored. Separate, so ingesting does not erase them. |
 | `AGENT_PROMPTS_DIR` | `prompts/` | Where the prompt files live. |
 | `AGENT_MAX_LLM_STEPS` | `10` | Loop steps per turn. The cost bound per turn is this plus one. |
 | `AGENT_MAX_TOOL_CALLS` | `12` | Tool calls per turn, including rejected ones. |
@@ -161,6 +163,7 @@ model. Edit them and re-run to see the difference.
 
 ```
 prompts/            system.md and the four messages the loop sends the model
+evaluations/        the twelve scenarios, the runner and the judge
 src/incident_agent/
   agent.py          the loop: steps, budgets, the final response
   session.py        conversation, evidence ledger, de-duplication
@@ -168,6 +171,7 @@ src/incident_agent/
   prompts.py        loads the prompt files
   llm.py            OpenAI Responses adapter, and the scripted fake used by the tests
   config.py         every tunable parameter, read from the environment
+  logs.py           run logs: one run per ingest, turn or evaluation
   cli.py            interactive command line
   api.py            five HTTP endpoints
   static/index.html the web UI, no build step
@@ -178,12 +182,12 @@ src/incident_agent/
     executor.py     the guardrail pipeline for one tool call
     summaries.py    deterministic summaries, including spike detection
     time_resolver.py  time expressions to UTC ranges
-tests/              162 tests, no API key required
+tests/              197 tests, no API key required
 ```
 
 ## Tests
 
-`pytest` runs 162 tests against a scripted fake model. They are deterministic, free, and need no
+`pytest` runs 197 tests against a scripted fake model. They are deterministic, free, and need no
 network. `tests/sample_data.py` builds the dataset they share.
 
 | File | Covers |
@@ -197,10 +201,44 @@ network. `tests/sample_data.py` builds the dataset they share.
 | `test_report.py` | Citation checks, confidence limits, the unverified and ledger fallbacks. |
 | `test_agent_loop.py` | Parallel calls, budget cut-off, stuck detection, forced final answer, repair, follow-ups. |
 | `test_api.py` | The endpoints, ingest, and session continuity. |
+| `test_logs.py` | What each workflow records, and that a failure is recorded before it propagates. |
+| `test_evaluations.py` | The scenario file, tool-coverage matching, every deterministic check, the runner. |
 
-## Not built yet
+## Evaluation
 
-**The evaluation suite.** An earlier version had twelve scenarios, but each was defined against
-fixed mock fixtures that no longer exist. They were deleted rather than left pointing at data that
-had been removed. The suite is being rebuilt against an ingested dataset, with its queries,
-expected findings and metrics designed around that data, and will run from its own tab in the UI.
+Twelve scenarios in `evaluations/scenarios.json`, written against the ingested dataset. Each one
+carries the question, the expected answer, the tools the investigation needs, claims the agent must
+not make, and whether an incident note is appropriate.
+
+```bash
+python -m evaluations.runner                      # all twelve
+python -m evaluations.runner --scenario E05       # one (repeatable)
+python -m evaluations.runner --no-judge           # deterministic checks only, no model grading
+python -m evaluations.runner --out report.json    # full results as JSON
+```
+
+Scoring is split deliberately.
+
+**Deterministic** for anything that is a fact about the run: were the required tools called (in any
+order), did an invalid time range reach the backend, was a transient timeout retried and recovered,
+was malformed output kept out of the evidence, did a follow-up reuse the existing investigation,
+was an incident note created where none was wanted. Wasted calls — duplicates, rejected arguments,
+calls past the budget — are counted and reported, not failed.
+
+**An LLM judge** only for what needs reading: factual correctness, grounding in the evidence,
+appropriate uncertainty about causation, completeness and actionability. Each is scored 0 (wrong),
+1 (partially correct) or 2 (correct), and the judge can raise a critical error of its own.
+
+A scenario passes when nothing critical happened, every required tool was called, every
+deterministic check held, and no judge score is 0.
+
+Two scenarios inject faults through the store: `E08` times a metrics call out on its first attempt,
+`E09` returns one malformed metrics response.
+
+## Monitoring
+
+Every workflow — an ingest, an agent turn, an evaluation run — is recorded as a run with ordered
+events: the model steps, each tool call with status, attempts and duration, rejected responses, why
+a turn stopped early, and what the run produced. The **Monitoring** tab lists runs newest first;
+clicking one shows its events. Logs live in their own database, so replacing the dataset never
+erases the record of what happened.

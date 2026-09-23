@@ -29,6 +29,7 @@ class Observation:
     data: Any = None
     error: dict | None = None
     attempts: int = 1
+    duration_ms: int = 0
 
     @property
     def citable(self) -> bool:

@@ -166,4 +166,6 @@ class Store:
             raise TimeoutError(f"{tool} did not respond in time")
         if fault == "transient" and self._attempts[tool] == 1:
             raise TransientError(f"{tool} is temporarily unavailable")
+        if fault == "malformed_once":
+            return "malformed" if self._attempts[tool] == 1 else None
         return fault if fault in ("empty", "malformed") else None

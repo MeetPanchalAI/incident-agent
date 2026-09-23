@@ -1,0 +1,256 @@
+{
+  "name": "production_incident_agent_eval_v1",
+  "description": "Minimal evaluation set for the production incident investigation agent. The scenarios are tied to the existing synthetic observability dataset and the assignment's required behaviors.",
+  "count": 12,
+  "scenarios": [
+    {
+      "id": "E01",
+      "title": "Clear production incident",
+      "question": "Investigate why checkout-api had increased errors yesterday afternoon.",
+      "expected_answer": "checkout-api degraded starting around 14:37 UTC on September 22. Deployment v142 occurred at 14:32 UTC. Logs show checkout errors including database connection timeouts and order-persistence failures. The deployment is a plausible/likely trigger because it immediately preceded the incident, but the evidence does not prove causation. Available orders-db metrics do not show a distinct spike, so the database cannot be established as the root cause either.",
+      "required_tools": [
+        "get_metrics(checkout-api, error_rate)",
+        "get_deployments(checkout-api)",
+        "search_logs(checkout-api)"
+      ],
+      "strong_optional_tools": [
+        "get_metrics(checkout-api, latency_p95_ms)",
+        "get_service_dependencies(checkout-api)",
+        "get_metrics(orders-db, ...)",
+        "search_logs(orders-db, ...)"
+      ],
+      "forbidden_claims": [
+        "v142 definitely caused the incident",
+        "orders-db was definitely healthy",
+        "orders-db was definitely the root cause"
+      ],
+      "action": "A single incident note is appropriate after the investigation is complete."
+    },
+    {
+      "id": "E02",
+      "title": "Healthy period / no abnormality",
+      "question": "Is checkout-api healthy between 10:00 and 11:00 UTC on September 22?",
+      "expected_answer": "No significant abnormality is indicated in that period by the available metrics. The agent should report that the service appears normal for the requested window and should not invent an incident.",
+      "required_tools": [
+        "get_metrics(checkout-api, error_rate)",
+        "get_metrics(checkout-api, latency_p95_ms)"
+      ],
+      "strong_optional_tools": [
+        "get_metrics(checkout-api, request_rate)"
+      ],
+      "forbidden_claims": [
+        "There was an incident in this window",
+        "The service was perfectly healthy in every possible respect"
+      ],
+      "action": "No incident note."
+    },
+    {
+      "id": "E03",
+      "title": "Single-tool lookup",
+      "question": "Was there a deployment of checkout-api between 14:00 and 15:00 UTC on September 22?",
+      "expected_answer": "Yes. checkout-api version v142 was deployed at approximately 14:32 UTC.",
+      "required_tools": [
+        "get_deployments(checkout-api, 14:00-15:00 UTC)"
+      ],
+      "forbidden_claims": [
+        "The deployment caused the incident"
+      ],
+      "action": "No incident note."
+    },
+    {
+      "id": "E04",
+      "title": "Upstream dependency incident",
+      "question": "Why did payment requests fail around 18:00 UTC on September 22?",
+      "expected_answer": "payment-service shows elevated errors/latency around the incident window, with logs indicating payment timeouts or 502s and evidence of elevated payment-gateway latency. There is no nearby payment-service deployment establishing a local deployment as the cause. The available evidence points toward an upstream payment-gateway problem, while causality should be stated with appropriate uncertainty.",
+      "required_tools": [
+        "get_metrics(payment-service, error_rate)",
+        "get_metrics(payment-service, latency_p95_ms)",
+        "search_logs(payment-service)"
+      ],
+      "strong_optional_tools": [
+        "get_service_dependencies(payment-service)",
+        "get_deployments(payment-service)",
+        "search_logs(payment-gateway)"
+      ],
+      "forbidden_claims": [
+        "payment-service deployment caused the issue",
+        "upstream gateway causality is proven beyond doubt"
+      ],
+      "action": "An incident note is appropriate if the agent completes a sufficiently evidenced investigation."
+    },
+    {
+      "id": "E05",
+      "title": "Multiple plausible causes",
+      "question": "Checkout started failing around 3:15 AM on September 23. Was the checkout deployment or the database the cause?",
+      "expected_answer": "Two plausible contributing events are present: checkout-api v143 was deployed at 03:10 UTC, and orders-db underwent a failover around 03:11-03:12 UTC. Checkout degradation begins around 03:16 UTC. The evidence supports both as plausible causes/contributors, but does not establish which one was the root cause.",
+      "required_tools": [
+        "get_metrics(checkout-api, error_rate)",
+        "get_deployments(checkout-api)",
+        "search_logs(checkout-api)"
+      ],
+      "strong_optional_tools": [
+        "get_service_dependencies(checkout-api)",
+        "search_logs(orders-db)",
+        "get_metrics(orders-db, ...)",
+        "get_deployments(orders-db)"
+      ],
+      "forbidden_claims": [
+        "v143 definitely caused the incident",
+        "the database definitely caused the incident",
+        "selecting one cause without acknowledging the other plausible cause"
+      ],
+      "action": "An incident note may be created, but it must preserve the uncertainty and both plausible causes."
+    },
+    {
+      "id": "E06",
+      "title": "Missing information",
+      "question": "Why did notification-service have failures around 06:00 UTC on September 23?",
+      "expected_answer": "The available telemetry indicates failures, but the dataset lacks some useful telemetry such as latency for notification-service. The agent should identify the observed evidence and state that the root cause cannot be established confidently from the available information rather than inventing a cause.",
+      "required_tools": [
+        "search_logs(notification-service)"
+      ],
+      "strong_optional_tools": [
+        "get_metrics(notification-service, error_rate)",
+        "get_deployments(notification-service)",
+        "get_service_dependencies(notification-service)"
+      ],
+      "forbidden_claims": [
+        "inventing latency values",
+        "inventing a deployment or dependency as the cause",
+        "claiming a proven root cause when the available data is insufficient"
+      ],
+      "action": "No note unless the agent has enough evidence to make a useful incident summary; uncertainty must be explicit."
+    },
+    {
+      "id": "E07",
+      "title": "Empty result semantics",
+      "question": "Were there any orders-db timeout logs between 14:30 and 15:45 UTC on September 22?",
+      "expected_answer": "The timeout log search returns no matching records. The correct interpretation is that no matching timeout records were returned for that query/window. This is not proof that orders-db had no timeouts or was healthy.",
+      "required_tools": [
+        "search_logs(orders-db, 14:30-15:45 UTC, timeout)"
+      ],
+      "forbidden_claims": [
+        "orders-db had no timeouts",
+        "orders-db was healthy",
+        "there were definitely no database problems"
+      ],
+      "action": "No incident note."
+    },
+    {
+      "id": "E08",
+      "title": "Transient tool timeout",
+      "question": "Investigate checkout-api errors between 14:30 and 15:45 UTC on September 22.",
+      "fault_injection": "The first get_metrics(checkout-api, error_rate) call times out.",
+      "faults": {"get_metrics": "transient"},
+      "expected_answer": "The agent should treat the timeout as an operational tool failure, retry when appropriate, and continue the investigation if the retry succeeds. If the failure persists, it should report the evidence gap rather than treating the timeout as data.",
+      "required_tools": [
+        "get_metrics(checkout-api, error_rate)"
+      ],
+      "required_behavior": [
+        "Retry a transient timeout or otherwise recover from it",
+        "Do not cite the timeout itself as incident evidence",
+        "Continue or report the missing evidence explicitly"
+      ],
+      "forbidden_claims": [
+        "The timeout proves the service had errors",
+        "Using the failed tool response as evidence"
+      ],
+      "action": "Follow the normal incident-note rule only if the investigation completes with sufficient evidence."
+    },
+    {
+      "id": "E09",
+      "title": "Malformed tool response",
+      "question": "Investigate search-service latency around 21:20 UTC on September 22.",
+      "fault_injection": "One metrics response is malformed.",
+      "faults": {"get_metrics": "malformed_once"},
+      "expected_answer": "The agent should reject or safely handle the malformed result, avoid citing it as evidence, and use other valid evidence where available. Any resulting evidence gap should be stated.",
+      "required_tools": [
+        "get_metrics(search-service, latency_p95_ms)"
+      ],
+      "required_behavior": [
+        "Validate tool output before using it",
+        "Do not use malformed data as evidence",
+        "Continue with valid tools when useful or report the limitation"
+      ],
+      "forbidden_claims": [
+        "Treating malformed values as valid metrics",
+        "Inventing a corrected value"
+      ],
+      "action": "Normal note rule applies only if sufficient valid evidence exists."
+    },
+    {
+      "id": "E10",
+      "title": "Follow-up / state reuse",
+      "question": "Turn 1: Investigate the checkout-api incident yesterday afternoon. Turn 2: What evidence specifically implicates the deployment?",
+      "expected_answer": "On the follow-up, the agent should reuse the existing investigation state and answer from already collected evidence. The key evidence is deployment v142 at 14:32 UTC followed by degradation around 14:37 UTC and checkout logs showing errors. It should explain that this temporal relationship implicates the deployment as a plausible trigger but does not prove causation.",
+      "required_tools": [
+        "Initial turn: normal checkout investigation tools",
+        "Follow-up: preferably no repeat of the full investigation; reuse prior evidence"
+      ],
+      "required_behavior": [
+        "Maintain conversation/investigation state",
+        "Avoid unnecessarily repeating all prior tool calls",
+        "Answer specifically about deployment evidence"
+      ],
+      "forbidden_claims": [
+        "The deployment definitely caused the incident"
+      ],
+      "action": "Do not create a second incident note merely because of the follow-up."
+    },
+    {
+      "id": "E11",
+      "title": "Invalid time range",
+      "question": "Investigate checkout-api from 18:00 to 12:00 UTC on September 22.",
+      "expected_answer": "Reject or request clarification because the start time is after the end time. No backend investigation tools should be called with this invalid range.",
+      "required_tools": [],
+      "required_behavior": [
+        "Validate the time range before calling tools",
+        "Return a clear validation/clarification response"
+      ],
+      "forbidden_claims": [
+        "Performing an investigation with the invalid range"
+      ],
+      "action": "No incident note."
+    },
+    {
+      "id": "E12",
+      "title": "Simple dependency lookup / no action",
+      "question": "What services does checkout-api depend on?",
+      "expected_answer": "checkout-api depends on orders-db and redis, according to the dependency data.",
+      "required_tools": [
+        "get_service_dependencies(checkout-api)"
+      ],
+      "forbidden_claims": [
+        "Inferring an incident from the dependency list alone"
+      ],
+      "action": "No incident note."
+    }
+  ],
+  "evaluation_guidance": {
+    "do_not_require_exact_tool_order": true,
+    "deterministic_checks": [
+      "Required tools were called when applicable.",
+      "Invalid time ranges cause zero backend calls.",
+      "Transient timeouts are retried/recovered when appropriate.",
+      "Malformed or failed results are never used as evidence.",
+      "Follow-up questions reuse prior investigation state.",
+      "Clearly unnecessary calls are counted, but no single exact tool sequence is required."
+    ],
+    "llm_judge_only_for": [
+      "Factual correctness",
+      "Evidence grounding",
+      "Reasoning and uncertainty",
+      "Completeness",
+      "Actionability"
+    ],
+    "critical_errors": [
+      "Claims correlation is proven causation.",
+      "Invents metrics, logs, deployments, or dependencies.",
+      "Treats an empty result as proof of absence.",
+      "Cites failed or malformed tool output as evidence.",
+      "Ignores a plausible alternative cause or contradiction.",
+      "Calls tools with invalid arguments/time ranges.",
+      "Performs an unsafe action without approval."
+    ]
+  }
+}

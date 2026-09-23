@@ -24,9 +24,14 @@ def dataset(tmp_path_factory) -> str:
     return str(path)
 
 
+@pytest.fixture(scope="session")
+def log_db(tmp_path_factory) -> str:
+    return str(tmp_path_factory.mktemp("logs") / "logs.db")
+
+
 @pytest.fixture
-def settings(dataset: str) -> Settings:
-    return Settings(now=NOW, db_path=dataset)
+def settings(dataset: str, log_db: str) -> Settings:
+    return Settings(now=NOW, db_path=dataset, log_db_path=log_db)
 
 
 @pytest.fixture
@@ -60,7 +65,8 @@ def call(executor, session, name, args, budget=None, batch=None):
 def service(settings: Settings, script, faults=None, budgets: Budgets | None = None):
     """An AgentService driven by a scripted fake model."""
     if budgets is not None:
-        settings = Settings(now=settings.now, db_path=settings.db_path, budgets=budgets)
+        settings = Settings(now=settings.now, db_path=settings.db_path,
+                            log_db_path=settings.log_db_path, budgets=budgets)
     return AgentService(settings, FakeLLM(script), Store(settings.db_path, faults))
 
 
