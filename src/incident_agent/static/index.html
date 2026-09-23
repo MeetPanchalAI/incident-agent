@@ -6,107 +6,179 @@
 <title>Incident Agent</title>
 <style>
   :root {
-    --bg: #ffffff; --panel: #f6f7f9; --line: #e2e5ea; --text: #16181d;
-    --muted: #666e7a; --accent: #2f5fd0; --warn: #9a5b00; --bad: #a12a2a;
+    --bg: #fbfbfc; --surface: #ffffff; --panel: #f4f5f7; --line: #e4e6ea;
+    --text: #15181d; --muted: #6a7280; --faint: #9aa1ab;
+    --accent: #2f5fd0; --warn: #9a5b00; --bad: #b02a2a; --ok: #1f7a4d;
+    --radius: 8px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #14161a; --panel: #1c1f25; --line: #2b2f37; --text: #e8eaed;
-      --muted: #9aa2ae; --accent: #7aa2f7; --warn: #d8a657; --bad: #e07070;
+      --bg: #101216; --surface: #171a1f; --panel: #1d2127; --line: #2a2f37;
+      --text: #e7e9ec; --muted: #98a0ac; --faint: #6d7684;
+      --accent: #7aa2f7; --warn: #d8a657; --bad: #e07b7b; --ok: #6fbf95;
     }
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column;
+    font: 15px/1.6 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  header {
-    display: flex; gap: 12px; align-items: center; padding: 12px 20px;
-    border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg);
+  button, textarea { font: inherit; color: inherit; }
+
+  /* ---- header ---- */
+  header { border-bottom: 1px solid var(--line); background: var(--surface); flex: none; }
+  .bar { display: flex; align-items: center; gap: 18px; padding: 10px 20px; }
+  .brand { font-weight: 600; letter-spacing: -.01em; }
+  nav { display: flex; gap: 2px; }
+  .tab {
+    border: 0; background: none; color: var(--muted); cursor: pointer;
+    padding: 5px 12px; border-radius: 6px; font-size: 14px;
   }
-  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-  .chip {
-    flex: 1; font-size: 12px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  .tab:hover { color: var(--text); background: var(--panel); }
+  .tab[aria-selected="true"] { color: var(--text); background: var(--panel); font-weight: 500; }
+  .grow { flex: 1; }
+  .btn {
+    border: 1px solid var(--line); background: var(--surface); border-radius: 6px;
+    padding: 6px 12px; font-size: 14px; cursor: pointer; white-space: nowrap;
   }
-  button[disabled] { opacity: .5; cursor: not-allowed; }
-  select, button {
-    font: inherit; font-size: 14px; padding: 6px 10px; border-radius: 6px;
-    border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer;
+  .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover:not(:disabled) { filter: brightness(1.08); color: #fff; }
+  .strip {
+    padding: 7px 20px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted);
+    font-family: ui-monospace, Menlo, Consolas, monospace; display: flex; gap: 8px; align-items: center;
   }
-  button:hover, select:hover { border-color: var(--accent); }
-  main { max-width: 860px; margin: 0 auto; padding: 20px 20px 140px; }
-  .turn { margin-bottom: 26px; }
-  .user {
-    background: var(--panel); border-left: 3px solid var(--accent);
-    padding: 10px 14px; border-radius: 0 6px 6px 0; margin-bottom: 14px; white-space: pre-wrap;
-  }
-  .lede { margin: 0 0 14px; }
-  section { margin-bottom: 14px; }
-  h2 {
-    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-    color: var(--muted); margin: 0 0 6px; font-weight: 600;
-  }
-  ul { margin: 0; padding-left: 20px; }
-  li { margin-bottom: 4px; }
-  .cite { color: var(--muted); font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
-  .badge {
-    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px;
-    border: 1px solid var(--line); background: var(--panel); margin-right: 6px; text-transform: uppercase;
-  }
-  .badge.high { border-color: var(--accent); color: var(--accent); }
-  .badge.medium { border-color: var(--warn); color: var(--warn); }
-  .banner {
-    border: 1px solid var(--bad); color: var(--bad); border-radius: 6px;
-    padding: 8px 12px; margin-bottom: 12px; font-size: 14px;
-  }
-  details { border: 1px solid var(--line); border-radius: 6px; margin-top: 12px; }
-  summary { cursor: pointer; padding: 8px 12px; font-size: 13px; color: var(--muted); }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  td { padding: 6px 12px; border-top: 1px solid var(--line); vertical-align: top; }
-  td.k { font-family: ui-monospace, Menlo, Consolas, monospace; white-space: nowrap; color: var(--muted); }
-  td.s { width: 1%; white-space: nowrap; }
-  .st-ok { color: var(--accent); } .st-empty { color: var(--muted); }
-  .st-error, .st-timeout, .st-invalid_arguments, .st-duplicate, .st-budget_exceeded { color: var(--warn); }
-  footer {
-    position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg);
-    border-top: 1px solid var(--line); padding: 12px 20px;
-  }
-  .composer { max-width: 860px; margin: 0 auto; display: flex; gap: 10px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
+  .dot.off { background: var(--faint); }
+
+  /* ---- layout ---- */
+  main { flex: 1; overflow-y: auto; }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 28px 20px 40px; }
+  footer { flex: none; border-top: 1px solid var(--line); background: var(--surface); }
+  .composer { max-width: 820px; margin: 0 auto; padding: 12px 20px; display: flex; gap: 10px; }
   textarea {
-    flex: 1; resize: none; font: inherit; padding: 9px 12px; border-radius: 6px;
-    border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    flex: 1; resize: none; padding: 10px 13px; border-radius: var(--radius);
+    border: 1px solid var(--line); background: var(--bg); line-height: 1.5;
   }
   textarea:focus { outline: none; border-color: var(--accent); }
-  .meta { color: var(--muted); font-size: 12px; margin-top: 10px; }
-  .empty { color: var(--muted); }
+  textarea:disabled { opacity: .6; }
+
+  /* ---- empty state ---- */
+  .hero { text-align: center; padding: 52px 0 24px; }
+  .hero h2 { font-size: 19px; font-weight: 600; margin: 0 0 8px; letter-spacing: -.01em; }
+  .hero p { color: var(--muted); margin: 0 auto 22px; max-width: 470px; }
+  .suggestions { display: flex; flex-direction: column; gap: 8px; max-width: 520px; margin: 0 auto; }
+  .suggestion {
+    text-align: left; border: 1px solid var(--line); background: var(--surface);
+    border-radius: var(--radius); padding: 10px 14px; cursor: pointer; color: var(--muted); font-size: 14px;
+  }
+  .suggestion:hover { border-color: var(--accent); color: var(--text); }
+
+  /* ---- turns ---- */
+  .turn { margin-bottom: 30px; }
+  .ask {
+    font-size: 16px; font-weight: 500; line-height: 1.5; margin-bottom: 16px;
+    padding-left: 13px; border-left: 2px solid var(--accent); white-space: pre-wrap;
+  }
+  .lede { margin: 0 0 18px; }
+  section.block { margin-bottom: 16px; }
+  h3 {
+    font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--faint); margin: 0 0 7px; font-weight: 600;
+  }
+  ul { margin: 0; padding-left: 19px; }
+  li { margin-bottom: 5px; }
+  .cite { color: var(--faint); font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .tag {
+    display: inline-block; font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase;
+    padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line);
+    margin-right: 7px; vertical-align: 1px; color: var(--muted);
+  }
+  .tag.high { border-color: var(--accent); color: var(--accent); }
+  .tag.medium { border-color: var(--warn); color: var(--warn); }
+  .cause { padding: 10px 14px; background: var(--panel); border-radius: var(--radius); }
+  .cause.none { color: var(--muted); }
+  .note {
+    border-radius: var(--radius); padding: 9px 13px; margin-bottom: 14px; font-size: 14px;
+    border: 1px solid var(--bad); color: var(--bad);
+  }
+  .meta { color: var(--faint); font-size: 12.5px; }
+
+  /* ---- trace ---- */
+  details { border: 1px solid var(--line); border-radius: var(--radius); margin-top: 16px; background: var(--surface); }
+  summary {
+    cursor: pointer; padding: 9px 14px; font-size: 13px; color: var(--muted);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  summary:hover { color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  td { padding: 7px 14px; border-top: 1px solid var(--line); vertical-align: top; }
+  td.id { font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--faint); white-space: nowrap; width: 1%; }
+  td.st { white-space: nowrap; width: 1%; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .call { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-word; }
+  .s-ok { color: var(--ok); } .s-empty { color: var(--faint); }
+  .s-error, .s-timeout, .s-invalid_arguments, .s-duplicate, .s-budget_exceeded { color: var(--warn); }
+
+  /* ---- evaluation ---- */
+  .card { border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 24px; background: var(--surface); }
+  .card h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .card p { color: var(--muted); margin: 0 0 16px; }
+  .card ul { color: var(--muted); }
+  .pulse { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.1s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: .25 } 50% { opacity: 1 } }
 </style>
 </head>
 <body>
+
 <header>
-  <h1>Incident Agent</h1>
-  <span class="chip" id="dataset">no data</span>
-  <input type="file" id="file" accept=".jsonl,.json,.log,.txt" hidden>
-  <button id="upload">Upload data</button>
-  <button id="reset">New session</button>
+  <div class="bar">
+    <span class="brand">Incident Agent</span>
+    <nav>
+      <button class="tab" id="tab-chat" aria-selected="true">Chat</button>
+      <button class="tab" id="tab-eval" aria-selected="false">Evaluation</button>
+    </nav>
+    <span class="grow"></span>
+    <input type="file" id="file" accept=".jsonl,.json,.log,.txt" hidden>
+    <button class="btn" id="upload">Upload data</button>
+    <button class="btn" id="reset">New session</button>
+  </div>
+  <div class="strip"><span class="dot off" id="dot"></span><span id="summary">loading…</span></div>
 </header>
 
-<main id="log"></main>
+<main>
+  <div class="wrap">
+    <div id="chat"><div id="log"></div><div id="hero"></div></div>
+    <div id="eval" hidden>
+      <div class="card">
+        <h2>Evaluation</h2>
+        <p>Not built yet. The question set has to be designed against a loaded dataset first.</p>
+        <h3>What it will do</h3>
+        <ul>
+          <li>Run a fixed set of questions against the loaded dataset.</li>
+          <li>Check behaviour rather than wording: which tools ran, whether every citation is valid,
+              whether confidence was capped, whether an incident note was filed.</li>
+          <li>Keep past runs, so a change to a prompt or a parameter can be compared with the last one.</li>
+        </ul>
+        <p style="margin:16px 0 0"><button class="btn" disabled>Run evaluation</button></p>
+      </div>
+    </div>
+  </div>
+</main>
 
 <footer>
   <div class="composer">
-    <textarea id="input" rows="2" placeholder="Upload a log file first."></textarea>
-    <button id="send">Send</button>
+    <textarea id="input" rows="2" placeholder="Upload a log file to begin." disabled></textarea>
+    <button class="btn primary" id="send" disabled>Send</button>
   </div>
 </footer>
 
 <script>
-const log = document.getElementById('log');
-const input = document.getElementById('input');
-const send = document.getElementById('send');
-const datasetChip = document.getElementById('dataset');
-const fileInput = document.getElementById('file');
-let sessionId = null;
+const $ = id => document.getElementById(id);
+const log = $('log'), hero = $('hero'), input = $('input'), send = $('send');
+let sessionId = null, info = null;
 
 const el = (tag, cls, text) => {
   const node = document.createElement(tag);
@@ -115,10 +187,62 @@ const el = (tag, cls, text) => {
   return node;
 };
 
-function list(parent, title, items, render) {
+const scroll = () => document.querySelector('main').scrollTo(0, 1e6);
+
+/* ---------- views ---------- */
+
+function show(view) {
+  $('chat').hidden = view !== 'chat';
+  $('eval').hidden = view !== 'eval';
+  $('tab-chat').setAttribute('aria-selected', String(view === 'chat'));
+  $('tab-eval').setAttribute('aria-selected', String(view === 'eval'));
+  document.querySelector('footer').hidden = view !== 'chat';
+  if (view === 'chat' && !input.disabled) input.focus();
+}
+
+function suggestions() {
+  const [first, second] = info.services;
+  return [
+    `Was anything wrong with ${first} yesterday afternoon?`,
+    `Why did ${second || first} start failing? Investigate and tell me what to check next.`,
+    `What does ${first} depend on?`,
+  ];
+}
+
+function renderHero() {
+  hero.replaceChildren();
+  if (log.children.length) return;
+  const box = el('div', 'hero');
+  if (!info || !info.dataset) {
+    box.append(el('h2', null, 'No data loaded'));
+    box.append(el('p', null,
+      'Upload a JSONL log file to investigate. One JSON object per line, with ts, service, level and '
+      + 'message. latency_ms, target and deployment events unlock the rest of the tools.'));
+    const button = el('button', 'btn primary', 'Upload data');
+    button.addEventListener('click', () => $('file').click());
+    box.append(button);
+  } else {
+    box.append(el('h2', null, 'Ask about ' + info.dataset.filename));
+    box.append(el('p', null,
+      `${info.dataset.event_count.toLocaleString()} events across ${info.services.length} services, `
+      + `${info.dataset.first_ts.slice(0, 10)} to ${info.dataset.last_ts.slice(0, 10)}.`));
+    const list = el('div', 'suggestions');
+    suggestions().forEach(text => {
+      const button = el('button', 'suggestion', text);
+      button.addEventListener('click', () => { input.value = text; ask(); });
+      list.append(button);
+    });
+    box.append(list);
+  }
+  hero.append(box);
+}
+
+/* ---------- one turn ---------- */
+
+function block(parent, title, items, render) {
   if (!items || !items.length) return;
-  const section = el('section');
-  section.append(el('h2', null, title));
+  const section = el('section', 'block');
+  section.append(el('h3', null, title));
   const ul = el('ul');
   items.forEach(item => ul.append(render ? render(item) : el('li', null, item)));
   section.append(ul);
@@ -126,84 +250,94 @@ function list(parent, title, items, render) {
 }
 
 function renderResponse(parent, r) {
-  if (r.unverified) parent.append(el('div', 'banner', 'Unverified: this response failed validation.'));
+  if (r.unverified) parent.append(el('div', 'note', 'Unverified: this response failed validation.'));
   parent.append(el('p', 'lede', r.message));
 
-  list(parent, 'Observed facts', r.observed_facts, f => {
+  block(parent, 'Observed facts', r.observed_facts, f => {
     const li = el('li', null, f.statement + ' ');
-    li.append(el('span', 'cite', '[' + f.evidence_ids.join(', ') + ']'));
+    li.append(el('span', 'cite', f.evidence_ids.join(' ')));
     return li;
   });
 
-  list(parent, 'Hypotheses', r.hypotheses, h => {
+  block(parent, 'Hypotheses', r.hypotheses, h => {
     const li = el('li');
-    li.append(el('span', 'badge ' + h.confidence, h.confidence));
+    li.append(el('span', 'tag ' + h.confidence, h.confidence));
     li.append(document.createTextNode(h.statement + ' '));
     const bits = [];
-    if (h.supporting_evidence_ids.length) bits.push('supported by ' + h.supporting_evidence_ids.join(', '));
-    if (h.contradicting_evidence_ids.length) bits.push('contradicted by ' + h.contradicting_evidence_ids.join(', '));
+    if (h.supporting_evidence_ids.length) bits.push('from ' + h.supporting_evidence_ids.join(' '));
+    if (h.contradicting_evidence_ids.length) bits.push('against ' + h.contradicting_evidence_ids.join(' '));
     if (h.missing_evidence.length) bits.push('missing: ' + h.missing_evidence.join('; '));
-    if (bits.length) li.append(el('span', 'cite', '[' + bits.join(' · ') + ']'));
+    if (bits.length) li.append(el('span', 'cite', bits.join(' · ')));
     return li;
   });
 
   if (r.hypotheses.length || r.response_type === 'investigation_report') {
-    const section = el('section');
-    section.append(el('h2', null, 'Likely cause'));
-    section.append(el('div', r.likely_cause ? null : 'empty', r.likely_cause || 'Inconclusive'));
+    const section = el('section', 'block');
+    section.append(el('h3', null, 'Likely cause'));
+    section.append(el('div', r.likely_cause ? 'cause' : 'cause none',
+      r.likely_cause || 'Inconclusive — the evidence does not support a single cause.'));
     parent.append(section);
   }
 
-  list(parent, 'Recommended actions', r.recommended_actions);
-  list(parent, 'Gaps', r.gaps);
-  list(parent, 'Assumptions', r.assumptions);
-  list(parent, 'Warnings', r.warnings);
+  block(parent, 'Recommended actions', r.recommended_actions);
+  block(parent, 'Gaps', r.gaps);
+  block(parent, 'Assumptions', r.assumptions);
+  block(parent, 'Warnings', r.warnings);
 }
 
 function renderTrace(parent, data) {
   const details = el('details');
   details.append(el('summary', null,
-    `Tool trace — ${data.trace.length} tool calls, ${data.llm_calls} model calls, ${data.steps} steps` +
-    (data.stopped_early ? ' (stopped early)' : '')));
-  const table = el('table');
-  if (!data.trace.length) {
-    const row = table.insertRow();
-    row.insertCell().append(el('span', 'empty', 'No tool calls.'));
+    `${data.trace.length} tool calls · ${data.llm_calls} model calls · ${data.steps} steps`
+    + (data.stopped_early ? ' · stopped early' : '')));
+  if (data.trace.length) {
+    const table = el('table');
+    data.trace.forEach(t => {
+      const row = table.insertRow();
+      const id = row.insertCell();
+      id.className = 'id';
+      id.textContent = t.observation_id;
+      const status = row.insertCell();
+      status.className = 'st';
+      status.append(el('span', 's-' + t.status, t.status + (t.attempts > 1 ? ` x${t.attempts}` : '')));
+      const args = Object.entries(t.args).map(([k, v]) => `${k}=${v}`).join(', ');
+      row.insertCell().append(el('div', 'call', `${t.tool}(${args})`), el('div', 'cite', t.summary));
+    });
+    details.append(table);
   }
-  data.trace.forEach(t => {
-    const row = table.insertRow();
-    row.insertCell().className = 'k';
-    row.cells[0].textContent = t.observation_id;
-    const status = el('span', 'st-' + t.status, t.status + (t.attempts > 1 ? ` x${t.attempts}` : ''));
-    row.insertCell().className = 's';
-    row.cells[1].append(status);
-    const args = Object.entries(t.args).map(([k, v]) => `${k}=${v}`).join(', ');
-    row.insertCell().append(el('div', null, `${t.tool}(${args})`), el('div', 'cite', t.summary));
-  });
-  details.append(table);
   parent.append(details);
 }
 
+/* ---------- requests ---------- */
+
 async function post(path, body) {
   const response = await fetch(path, {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
-  return response.json();
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || response.statusText);
+  return data;
 }
 
 async function ask() {
   const message = input.value.trim();
-  if (!message) return;
+  if (!message || send.disabled) return;
   input.value = '';
   send.disabled = true;
+  hero.replaceChildren();
 
   const turn = el('div', 'turn');
-  turn.append(el('div', 'user', message));
-  const pending = el('div', 'meta', 'Investigating…');
+  turn.append(el('div', 'ask', message));
+  const pending = el('div', 'meta');
+  pending.append(el('span', 'pulse'), document.createTextNode(' Investigating… 0s'));
   turn.append(pending);
   log.append(turn);
-  window.scrollTo(0, document.body.scrollHeight);
+  scroll();
+
+  const started = Date.now();
+  const tick = setInterval(() => {
+    pending.lastChild.textContent = ` Investigating… ${Math.round((Date.now() - started) / 1000)}s`;
+  }, 1000);
 
   try {
     const data = await post('/api/chat', {message, session_id: sessionId});
@@ -213,11 +347,54 @@ async function ask() {
     renderTrace(turn, data);
   } catch (error) {
     pending.remove();
-    turn.append(el('div', 'banner', 'Request failed: ' + error.message));
+    turn.append(el('div', 'note', error.message));
   } finally {
-    send.disabled = false;
+    clearInterval(tick);
+    send.disabled = !(info && info.dataset);
     input.focus();
-    window.scrollTo(0, document.body.scrollHeight);
+    scroll();
+  }
+}
+
+function ingestReport(report) {
+  const turn = el('div', 'turn');
+  turn.append(el('div', 'ask', 'Uploaded ' + report.filename));
+  turn.append(el('p', 'lede',
+    `${report.events.toLocaleString()} events loaded`
+    + (report.skipped ? `, ${report.skipped} line(s) skipped` : '')
+    + `, ${report.first_ts} to ${report.last_ts}.`));
+  block(turn, 'Services', report.services);
+  block(turn, 'Derived', [
+    'metrics: ' + (report.metrics.join(', ') || 'none'),
+    'deployments: ' + report.deployments,
+    'dependency edges: ' + report.dependencies,
+  ]);
+  block(turn, 'Skipped lines', report.problems);
+  return turn;
+}
+
+async function upload(file) {
+  send.disabled = true;
+  log.replaceChildren();
+  const busy = el('div', 'hero');
+  busy.append(el('h2', null, 'Ingesting ' + file.name));
+  busy.append(el('p', null, 'Reading events and deriving metrics…'));
+  hero.replaceChildren(busy);
+
+  const body = new FormData();
+  body.append('file', file);
+  try {
+    const response = await fetch('/api/ingest', {method: 'POST', body});
+    const report = await response.json();
+    if (!response.ok) throw new Error(report.detail || response.statusText);
+    sessionId = null;
+    log.replaceChildren(ingestReport(report));
+    await refresh();
+  } catch (error) {
+    hero.replaceChildren();
+    log.replaceChildren(el('div', 'note', 'Ingest failed: ' + error.message));
+  } finally {
+    input.focus();
   }
 }
 
@@ -225,66 +402,41 @@ async function reset() {
   const data = await post('/api/reset', {});
   sessionId = data.session_id;
   log.replaceChildren();
+  renderHero();
   input.focus();
 }
 
-async function upload(file) {
-  const body = new FormData();
-  body.append('file', file);
-  const notice = el('div', 'meta', `Ingesting ${file.name}...`);
-  log.replaceChildren(notice);
-  send.disabled = true;
-  try {
-    const response = await fetch('/api/ingest', {method: 'POST', body});
-    const report = await response.json();
-    if (!response.ok) throw new Error(report.detail || response.statusText);
-    sessionId = null;
-    const lines = [
-      `${report.events} events from ${report.filename}` + (report.skipped ? `, ${report.skipped} skipped` : ''),
-      `${report.first_ts} to ${report.last_ts}`,
-      `services: ${report.services.join(', ')}`,
-      `metrics: ${report.metrics.join(', ')} | deployments: ${report.deployments} | dependency edges: ${report.dependencies}`,
-    ].concat(report.problems.slice(0, 3).map(p => `skipped: ${p}`));
-    log.replaceChildren();
-    lines.forEach(line => log.append(el('div', 'meta', line)));
-    await refresh();
-  } catch (error) {
-    log.replaceChildren(el('div', 'banner', 'Ingest failed: ' + error.message));
-  } finally {
-    input.focus();
-  }
-}
-
 async function refresh() {
-  const info = await (await fetch('/health')).json();
-  document.title = `Incident Agent · ${info.model}`;
+  info = await (await fetch('/health')).json();
   const d = info.dataset;
-  datasetChip.textContent = d
-    ? `${d.filename} · ${d.event_count} events · ${d.first_ts.slice(0, 10)} to ${d.last_ts.slice(0, 10)} · ${info.services.length} services`
-    : 'no data ingested - upload a JSONL log file to begin';
+  $('dot').className = 'dot' + (d ? '' : ' off');
+  $('summary').textContent = d
+    ? `${d.filename} · ${d.event_count.toLocaleString()} events · ${info.services.length} services `
+      + `· ${d.first_ts.slice(0, 10)} to ${d.last_ts.slice(0, 10)} · ${info.model}`
+    : `no dataset loaded · ${info.model}`;
   send.disabled = !d;
-  input.placeholder = d
-    ? 'Investigate errors on a service, e.g. "why did checkout-api fail yesterday afternoon?"'
-    : 'Upload a log file first.';
+  input.disabled = !d;
+  input.placeholder = d ? 'Ask about the data…' : 'Upload a log file to begin.';
   if (!info.configured) {
-    log.append(el('div', 'banner',
-      'OPENAI_API_KEY is not set. Put your key on the OPENAI_API_KEY= line in .env and restart the server.'));
+    log.prepend(el('div', 'note', 'OPENAI_API_KEY is not set. Add it to .env and restart the server.'));
   }
+  renderHero();
 }
 
+$('tab-chat').addEventListener('click', () => show('chat'));
+$('tab-eval').addEventListener('click', () => show('eval'));
+$('upload').addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', event => {
+  if (event.target.files.length) upload(event.target.files[0]);
+  event.target.value = '';
+});
+$('reset').addEventListener('click', reset);
 send.addEventListener('click', ask);
-input.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
-});
-document.getElementById('reset').addEventListener('click', reset);
-
-document.getElementById('upload').addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', () => {
-  if (fileInput.files.length) upload(fileInput.files[0]);
-  fileInput.value = '';
+input.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); ask(); }
 });
 
-refresh().then(() => input.focus());
+refresh();
 </script>
 </body>
 </html>
