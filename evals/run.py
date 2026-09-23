@@ -14,6 +14,7 @@ import argparse
 import sys
 
 from incident_agent import build_service, load_settings
+from incident_agent.config import format_iso
 from incident_agent.report import render_text
 
 from .scenarios import SCENARIOS, Run, Scenario
@@ -74,6 +75,17 @@ def main(argv: list[str]) -> int:
     if not selected:
         print("No scenario matched.")
         return 2
+
+    # Fail once, up front, rather than once per scenario.
+    settings = load_settings()
+    if not settings.api_key:
+        print("OPENAI_API_KEY is not set, so no scenario can run.")
+        print("Open .env and put your key on the OPENAI_API_KEY= line, then run this again.")
+        print("`python -m evals.run --list` works without a key.")
+        return 2
+    effort = f", reasoning effort {settings.reasoning_effort}" if settings.reasoning_effort else ""
+    print(f"model {settings.model}, temperature {settings.temperature}{effort}, "
+          f"now {format_iso(settings.now)}, world per scenario\n")
 
     print(f"{'#':>3}  {'result':<6} {'category':<42} failed checks")
     print("-" * 100)

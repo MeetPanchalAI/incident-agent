@@ -31,7 +31,10 @@ def _service(world: str) -> AgentService:
     if LLM_OVERRIDE is not None:
         return build_service(settings, world=world, llm=LLM_OVERRIDE)
     if world not in _services:
-        _services[world] = build_service(settings, world=world)
+        try:
+            _services[world] = build_service(settings, world=world)
+        except RuntimeError as error:  # no API key: say so instead of returning a 500
+            raise HTTPException(503, str(error)) from error
     return _services[world]
 
 
@@ -52,7 +55,13 @@ def index() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "now": settings.now.isoformat(), "worlds": available_worlds()}
+    return {
+        "status": "ok",
+        "now": settings.now.isoformat(),
+        "worlds": available_worlds(),
+        "model": settings.model,
+        "configured": bool(settings.api_key) or LLM_OVERRIDE is not None,
+    }
 
 
 @app.post("/api/reset")

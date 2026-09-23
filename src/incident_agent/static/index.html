@@ -230,6 +230,11 @@ document.getElementById('reset').addEventListener('click', reset);
 fetch('/health').then(r => r.json()).then(info => {
   info.worlds.forEach(w => worldSelect.append(new Option(w, w)));
   worldSelect.value = info.worlds.includes('incident') ? 'incident' : info.worlds[0];
+  document.title = `Incident Agent · ${info.model}`;
+  if (!info.configured) {
+    log.append(el('div', 'banner',
+      'OPENAI_API_KEY is not set. Put your key on the OPENAI_API_KEY= line in .env and restart the server.'));
+  }
   input.focus();
 });
 </script>
