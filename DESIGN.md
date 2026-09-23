@@ -427,11 +427,31 @@ the agent cannot take a destructive action at all. A `rollback_deployment` tool 
 approval checkpoint — the loop pausing, returning `pending_action`, and executing only after the
 user confirms that exact service and version — is the first thing to add next.
 
+## State: what the product remembers
+
+Two databases, and the split is the point. The **dataset** is replaced on every upload. The
+**state** database is not: conversations, run logs and evaluation results all have to outlive a new
+upload and a server restart.
+
+| Group | Tables |
+|---|---|
+| Run logs | `run`, `log` |
+| Conversations | `session`, `turn`, `message`, `obs` |
+| Evaluations | `eval_run`, `eval_result` |
+
+A conversation stores three things because they answer three questions: `turn` is what the UI
+replays, `message` is the model conversation needed to continue it, and `obs` is the evidence
+ledger that makes an earlier observation still citable in a later turn. It is rewritten after each
+turn rather than appended to — a conversation is small, and one write that is obviously correct
+beats three that have to agree.
+
+A conversation records the dataset it was asked about. One started against a previous dataset is
+kept as history rather than resumed, because its evidence refers to data that is no longer loaded.
+
 ## Run logs
 
 Every workflow opens a run and writes ordered events to it: an ingest, an agent turn, an evaluation
-run. Two tables — `run` (kind, start, duration, status, one-line summary) and `log` (sequence,
-level, event name, message, a small JSON payload).
+run.
 
 The events are chosen so that one run reads as an account of what the system did, and nothing more:
 
@@ -439,7 +459,7 @@ The events are chosen so that one run reads as an account of what the system did
 |---|---|
 | `turn.start` / `turn.done` | the question, then the response type and the counts |
 | `model.step` | which tools the model asked for at that step |
-| `tool.call` | one per call: name, arguments that matter, status, attempts, duration |
+| `tool.call` | one per call: its position in the turn, the step it belonged to, the arguments that matter, status, attempts, duration, and what it found |
 | `response.rejected` | a final response failed validation and went back for repair |
 | `turn.forced_final` | the loop stopped early, and whether it was the budget or no progress |
 | `ingest.start` / `parsed` / `derived` / `failed` | what was read, what was skipped, what was derived |
@@ -463,6 +483,11 @@ because "spent two extra calls" is information, not a defect.
 
 **An LLM judge only for what needs reading**: factual correctness, grounding, uncertainty about
 causation, completeness, actionability — 0, 1 or 2 each. It can also raise a critical error.
+
+The suite runs from the command line or from the Evaluation tab. From the tab it runs on a worker
+thread and the page polls for progress, because twelve scenarios take minutes and a request that
+long would time out. Results are written to the database after each scenario, so a run that is
+interrupted still leaves everything it managed to score.
 
 A scenario passes when nothing critical happened, every required tool was called, every
 deterministic check held, and no judge score is 0.
@@ -495,8 +520,8 @@ them anyway — a guardrail that is never exercised is a guardrail nobody notice
 8. **The judge is a single model call with no second opinion.** It sees the question, the expected
    answer and the agent's response, and its scores are as variable as any model's. It is there to
    catch what deterministic checks cannot read, not to be an authority.
-9. **The evaluation tab does not run anything yet.** The suite runs from the command line; the tab
-   describes what it will do.
+9. **Only one evaluation can run at a time**, and its progress is held in memory. Restarting the
+   server mid-run loses the progress, though every scenario already scored is in the database.
 
 ## What would change for production scale
 

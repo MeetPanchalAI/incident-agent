@@ -58,7 +58,7 @@ def main(argv: list[str]) -> int:
         if len(argv) < 2:
             print("Usage: python -m incident_agent.cli --ingest <path>")
             return 2
-        return 0 if _load(argv[1], settings.db_path, settings.log_db_path) else 1
+        return 0 if _load(argv[1], settings.db_path, settings.state_db_path) else 1
 
     store = Store(settings.db_path)
     empty = store.is_empty()
@@ -106,7 +106,7 @@ def main(argv: list[str]) -> int:
             print("New session.")
             continue
         if line.startswith("/ingest "):
-            if _load(line.split(maxsplit=1)[1].strip(), settings.db_path, settings.log_db_path):
+            if _load(line.split(maxsplit=1)[1].strip(), settings.db_path, settings.state_db_path):
                 service = build_service(settings)
                 session = service.new_session()
             continue

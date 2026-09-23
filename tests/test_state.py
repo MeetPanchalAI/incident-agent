@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from incident_agent.logs import Recorder, recent_runs, run_logs
+from incident_agent.state import Recorder, recent_runs, run_logs
 from incident_agent.tools.ingest import IngestError, ingest
 from tests.conftest import WINDOW, service, submit
 
@@ -87,49 +87,62 @@ def test_ingest_without_a_log_database_still_works(tmp_path):
 # -- agent turns -----------------------------------------------------------
 
 
-def test_a_turn_records_each_step_and_each_tool_call(settings, log_db):
+def test_a_turn_records_each_step_and_each_tool_call(settings, state_db):
     agent = service(settings, [[METRICS], [DONE]])
     agent.run_turn(agent.new_session(), "why did checkout-api fail?")
 
-    run = recent_runs(log_db, kind="turn")[0]
+    run = recent_runs(state_db, kind="turn")[0]
     assert run["status"] == "ok"
-    assert events(log_db, run["id"]) == ["turn.start", "model.step", "tool.call", "model.step", "turn.done"]
-    tool = next(line for line in run_logs(log_db, run["id"]) if line["event"] == "tool.call")
-    assert tool["message"].startswith("get_metrics(service=checkout-api metric=error_rate) -> ok")
-    assert tool["data"]["observation"] == "obs_001"
+    assert events(state_db, run["id"]) == ["turn.start", "model.step", "tool.call", "model.step", "turn.done"]
+    tool = next(line for line in run_logs(state_db, run["id"]) if line["event"] == "tool.call")
+    assert tool["message"].startswith("#1 get_metrics(checkout-api, error_rate, 14:00-16:00) -> ok")
+    assert "spike starts" in tool["message"]  # what the call actually found
+    assert (tool["data"]["order"], tool["data"]["step"], tool["data"]["observation"]) == (1, 1, "obs_001")
     assert tool["data"]["ms"] >= 0
 
 
-def test_a_failing_tool_call_is_logged_as_a_warning(settings, log_db):
+def test_model_steps_say_how_many_calls_were_asked_for(settings, state_db):
+    from tests.conftest import WINDOW as W
+    deploys = ("get_deployments", {"service": "checkout-api", **W})
+    agent = service(settings, [[METRICS, deploys], [DONE]])
+    agent.run_turn(agent.new_session(), "investigate")
+    run = recent_runs(state_db, kind="turn")[0]
+    step = next(line for line in run_logs(state_db, run["id"]) if line["event"] == "model.step")
+    assert step["message"] == "step 1/10: 2 call(s) - get_metrics, get_deployments"
+    orders = [line["data"]["order"] for line in run_logs(state_db, run["id"]) if line["event"] == "tool.call"]
+    assert orders == [1, 2]
+
+
+def test_a_failing_tool_call_is_logged_as_a_warning(settings, state_db):
     agent = service(settings, [[BAD], [DONE]])
     agent.run_turn(agent.new_session(), "check a service that is not there")
-    run = recent_runs(log_db, kind="turn")[0]
-    tool = next(line for line in run_logs(log_db, run["id"]) if line["event"] == "tool.call")
+    run = recent_runs(state_db, kind="turn")[0]
+    tool = next(line for line in run_logs(state_db, run["id"]) if line["event"] == "tool.call")
     assert tool["level"] == "warn"
     assert "invalid_arguments" in tool["message"]
 
 
-def test_stopping_early_says_why(settings, log_db):
+def test_stopping_early_says_why(settings, state_db):
     from incident_agent.config import Budgets
 
     agent = service(settings, [[METRICS], [METRICS], [DONE]], budgets=Budgets(max_llm_steps=2))
     agent.run_turn(agent.new_session(), "keep going")
-    run = recent_runs(log_db, kind="turn")[0]
-    forced = next(line for line in run_logs(log_db, run["id"]) if line["event"] == "turn.forced_final")
+    run = recent_runs(state_db, kind="turn")[0]
+    forced = next(line for line in run_logs(state_db, run["id"]) if line["event"] == "turn.forced_final")
     assert "step budget spent" in forced["message"]
 
 
-def test_the_summary_says_what_the_turn_produced(settings, log_db):
+def test_the_summary_says_what_the_turn_produced(settings, state_db):
     agent = service(settings, [[METRICS], [DONE]])
     agent.run_turn(agent.new_session(), "anything wrong?")
-    run = recent_runs(log_db, kind="turn")[0]
+    run = recent_runs(state_db, kind="turn")[0]
     assert run["summary"] == "answer · 1 tool calls · 2 model calls"
 
 
-def test_a_crash_inside_a_turn_is_recorded_before_it_propagates(settings, log_db):
+def test_a_crash_inside_a_turn_is_recorded_before_it_propagates(settings, state_db):
     agent = service(settings, [])  # an exhausted script raises
     with pytest.raises(AssertionError):
         agent.run_turn(agent.new_session(), "boom")
-    run = recent_runs(log_db, kind="turn")[0]
+    run = recent_runs(state_db, kind="turn")[0]
     assert run["status"] == "error"
-    assert "turn.failed" in events(log_db, run["id"])
+    assert "turn.failed" in events(state_db, run["id"])

@@ -23,7 +23,7 @@ def client(monkeypatch, tmp_path, dataset):
     # A private copy: these tests ingest, and must not disturb the shared dataset.
     own = tmp_path / "api.db"
     own.write_bytes(pathlib.Path(dataset).read_bytes())
-    monkeypatch.setattr(api, "settings", Settings(now=NOW, db_path=own, log_db_path=tmp_path / "logs.db"))
+    monkeypatch.setattr(api, "settings", Settings(now=NOW, db_path=own, state_db_path=tmp_path / "logs.db"))
     monkeypatch.setattr(api, "LLM_OVERRIDE", FakeLLM([[METRICS], [DONE], [DONE], [DONE]]))
     api._reload()
     return TestClient(api.app)
@@ -33,7 +33,7 @@ def client(monkeypatch, tmp_path, dataset):
 def blank(monkeypatch, tmp_path):
     """A client with no dataset ingested."""
     monkeypatch.setattr(api, "settings",
-                        Settings(now=NOW, db_path=tmp_path / "empty.db", log_db_path=tmp_path / "logs.db"))
+                        Settings(now=NOW, db_path=tmp_path / "empty.db", state_db_path=tmp_path / "logs.db"))
     monkeypatch.setattr(api, "LLM_OVERRIDE", FakeLLM([]))
     api._reload()
     return TestClient(api.app)
@@ -141,3 +141,73 @@ def test_an_upload_is_recorded_as_an_ingest_run(blank):
     good = json.dumps({"ts": "2026-09-22T14:00:00Z", "service": "api", "level": "INFO", "message": "ok"})
     _upload(blank, good)
     assert [r["kind"] for r in blank.get("/api/runs?kind=ingest").json()["runs"]] == ["ingest"]
+
+
+# -- persistence -----------------------------------------------------------
+
+
+def test_a_conversation_survives_a_server_restart(client):
+    first = client.post("/api/chat", json={"message": "anything wrong with checkout-api?"}).json()
+    api._sessions.clear()  # what a restart looks like from here
+
+    second = client.post("/api/chat", json={"message": "and now?", "session_id": first["session_id"]}).json()
+    assert second["session_id"] == first["session_id"]
+    assert second["trace"] == []  # the evidence ledger came back with it
+
+
+def test_a_conversation_can_be_replayed_from_the_database(client):
+    first = client.post("/api/chat", json={"message": "what happened?"}).json()
+    stored = client.get(f"/api/sessions/{first['session_id']}").json()
+    assert [t["question"] for t in stored["turns"]] == ["what happened?"]
+    assert stored["turns"][0]["response"]["message"] == "checkout-api looks normal."
+    assert stored["dataset"] == "sample.jsonl"
+
+
+def test_conversations_are_listed_newest_first(client):
+    client.post("/api/chat", json={"message": "first question"})
+    client.post("/api/reset", json={})
+    client.post("/api/chat", json={"message": "second question"})
+    titles = [s["title"] for s in client.get("/api/sessions").json()["sessions"]]
+    assert titles[:2] == ["second question", "first question"]
+
+
+def test_an_unknown_conversation_is_a_404(client):
+    assert client.get("/api/sessions/nope").status_code == 404
+
+
+def test_a_conversation_from_another_dataset_is_not_resumed(client):
+    first = client.post("/api/chat", json={"message": "about the old data"}).json()
+    good = json.dumps({"ts": "2026-09-22T14:00:00Z", "service": "api", "level": "INFO", "message": "ok"})
+    _upload(client, good)
+    second = client.post("/api/chat", json={"message": "about the new data",
+                                            "session_id": first["session_id"]}).json()
+    assert second["session_id"] != first["session_id"]
+
+
+# -- evaluation endpoints --------------------------------------------------
+
+
+def test_the_scenarios_are_listed_for_the_ui(client):
+    scenarios = client.get("/api/evaluations/scenarios").json()["scenarios"]
+    assert len(scenarios) == 12
+    assert scenarios[0]["id"] == "E01" and scenarios[0]["question"]
+
+
+def test_the_status_endpoint_reports_an_idle_suite(client):
+    status = client.get("/api/evaluations/status").json()
+    assert status["running"] is False and status["done"] == 0
+
+
+def test_two_evaluations_cannot_run_at_once(client, monkeypatch):
+    monkeypatch.setitem(api._evaluation, "running", True)
+    assert client.post("/api/evaluations/run", json={}).status_code == 409
+
+
+def test_past_evaluation_runs_are_listed(client):
+    from incident_agent.state import save_eval_run
+
+    save_eval_run(api.settings.state_db_path, "run1", "sample.jsonl", "m", True,
+                  [{"scenario_id": "E01", "pass": True, "critical_error": False}], "2026-09-23T10:00:00Z")
+    runs = client.get("/api/evaluations/runs").json()["runs"]
+    assert runs[0]["id"] == "run1" and runs[0]["passed"] == 1
+    assert client.get("/api/evaluations/runs/run1").json()["results"][0]["scenario_id"] == "E01"

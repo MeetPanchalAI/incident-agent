@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from ..config import format_iso, parse_iso
-from ..logs import Recorder
+from ..state import Recorder
 from .store import connect
 
 BATCH = 5000

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from .config import Settings
 from .llm import LLMClient, tool_result_item
-from .logs import Recorder
+from .state import Recorder
 from .prompts import Prompts
 from .report import FinalOutcome, build_from_ledger, finalize, finalize_unverified, submit_response_schema
 from .session import Session
@@ -70,7 +70,7 @@ class AgentService:
 
     def run_turn(self, session: Session, user_message: str) -> TurnResult:
         """One user turn, recorded as one run in the log database."""
-        log = Recorder(self.settings.log_db_path, "turn", user_message)
+        log = Recorder(self.settings.state_db_path, "turn", user_message)
         log.event("turn.start", user_message, session=session.id, turn=session.turn + 1)
         try:
             result = self._run_turn(session, user_message, log)
@@ -95,14 +95,19 @@ class AgentService:
         session.start_turn(user_message)
         budget = Budget(self.settings.budgets)
         llm_calls = 0
+        order = 0  # position of each tool call within this turn
 
         while budget.has_steps() and not budget.stuck():
             reply = self.llm.chat(session.messages, self.tools)
             llm_calls += 1
             budget.use_step()
             session.messages.extend(reply.items)
-            log.event("model.step", ", ".join(c.name for c in reply.tool_calls) or "no tool call",
-                      step=budget.steps_used)
+            wanted = [c.name for c in reply.tool_calls]
+            log.event(
+                "model.step",
+                f"step {budget.steps_used}/{self.settings.budgets.max_llm_steps}: "
+                + (f"{len(wanted)} call(s) - {', '.join(wanted)}" if wanted else "no tool call"),
+                step=budget.steps_used, calls=wanted)
 
             if not reply.tool_calls:
                 budget.unproductive_streak += 1
@@ -120,12 +125,14 @@ class AgentService:
                     budget.observe("invalid_arguments")
                 else:
                     observation = self.executor.run(call, session, budget, batch)
-                    self._log_tool(log, observation)
+                    order += 1
+                    self._log_tool(log, observation, order, budget.steps_used)
                     self._reply_to(session, call, observation.envelope())
 
         reason = "step budget spent" if not budget.has_steps() else "no progress in three calls"
-        log.event("turn.forced_final", f"Stopping early: {reason}.", level="warn")
-        return self._force_final(session, budget, llm_calls)
+        log.event("turn.forced_final", f"Stopping early: {reason}.", level="warn",
+                  steps=budget.steps_used, tool_calls=budget.tool_calls_used)
+        return self._force_final_logged(session, budget, llm_calls, log)
 
     def _finalize(self, call: ToolCall, session: Session, budget: Budget, alone: bool) -> tuple[FinalOutcome | None, dict]:
         if not alone:
@@ -162,16 +169,27 @@ class AgentService:
         outcome.response.gaps.append(self.prompts.stopped_early)
         return self._result(outcome, session, llm_calls, budget, stopped_early=True)
 
+    def _force_final_logged(self, session: Session, budget: Budget, llm_calls: int, log: Recorder) -> TurnResult:
+        result = self._force_final(session, budget, llm_calls)
+        log.event("model.step", "forced final call: submit_response only", step=budget.steps_used + 1)
+        return result
+
     # -- helpers -----------------------------------------------------------
 
     @staticmethod
-    def _log_tool(log: Recorder, o) -> None:
-        args = " ".join(f"{k}={v}" for k, v in o.args.items() if k in ("service", "metric", "query", "expression"))
+    def _log_tool(log: Recorder, o, order: int, step: int) -> None:
+        """One line per call, in the order it ran, with what it returned."""
+        named = [str(o.args[k]) for k in ("service", "metric", "expression", "query") if o.args.get(k)]
+        if o.args.get("start_time"):
+            named.append(f"{o.args['start_time'][11:16]}-{o.args['end_time'][11:16]}")
         log.event(
-            "tool.call", f"{o.tool}({args}) -> {o.status}",
+            "tool.call",
+            f"#{order} {o.tool}({', '.join(named)}) -> {o.status}"
+            + (f" after {o.attempts} attempts" if o.attempts > 1 else "")
+            + f" in {o.duration_ms}ms | {o.summary[:220]}",
             level="info" if o.citable else "warn",
-            observation=o.id, tool=o.tool, status=o.status,
-            attempts=o.attempts, ms=o.duration_ms,
+            order=order, step=step, observation=o.id, tool=o.tool,
+            status=o.status, attempts=o.attempts, ms=o.duration_ms,
         )
 
     @staticmethod

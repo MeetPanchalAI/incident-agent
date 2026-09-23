@@ -15,14 +15,21 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+from typing import Callable
 
 from incident_agent import build_service, load_settings
 from incident_agent.config import Settings
-from incident_agent.logs import Recorder
+from incident_agent.state import Recorder, save_eval_run
 from incident_agent.tools.store import Store
 
 from .judge import evaluate
+
+
+class EvalError(Exception):
+    """The suite could not be started."""
 
 SCENARIOS = Path(__file__).parent / "scenarios.json"
 TURN_SPLIT = re.compile(r"\s*Turn\s*\d+\s*:\s*")
@@ -91,6 +98,60 @@ def report_line(result: dict) -> str:
             f"{result['required_tool_coverage']:<6} {mean:<5} {result['title']:<34} {'; '.join(flags)}")
 
 
+def run_suite(settings: Settings, scenario_ids: list[str] | None = None, use_judge: bool = True,
+              on_result: Callable[[dict], None] | None = None) -> dict:
+    """Run the scenarios, record the run, persist the results, return the report.
+
+    Results are written after each scenario, so a run that is interrupted still
+    leaves everything it managed to score.
+    """
+    store = Store(settings.db_path)
+    dataset = store.info()
+    store.close()
+    if not dataset:
+        raise EvalError("No dataset has been ingested. Load a log file first.")
+    if not settings.api_key:
+        raise EvalError("OPENAI_API_KEY is not set.")
+
+    chosen = [s for s in load_scenarios() if not scenario_ids or s["id"] in scenario_ids]
+    if not chosen:
+        raise EvalError("No scenario matched.")
+
+    started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log = Recorder(settings.state_db_path, "eval", f"{len(chosen)} scenarios on {dataset['filename']}")
+    log.event("eval.start", f"{len(chosen)} scenarios against {dataset['filename']}.",
+              model=settings.model, judge=use_judge, dataset=dataset["filename"],
+              scenarios=[s["id"] for s in chosen])
+
+    results: list[dict] = []
+    for scenario in chosen:
+        transcript = run_scenario(scenario, settings)
+        result = evaluate(scenario, transcript, settings, use_judge=use_judge)
+        results.append(result)
+        save_eval_run(settings.state_db_path, log.id, dataset["filename"], settings.model,
+                      use_judge, results, started_at)
+        log.event(
+            "eval.scenario",
+            f"{scenario['id']} {'passed' if result['pass'] else 'failed'}: {scenario['title']}"
+            + (f" - {'; '.join(result['critical_reasons'])}" if result["critical_reasons"] else ""),
+            level="info" if result["pass"] else "warn",
+            scenario=scenario["id"], passed=result["pass"], critical=result["critical_error"],
+            coverage=result["required_tool_coverage"], wasted=result["unnecessary_tool_calls"],
+            scores=result["judge_scores"],
+        )
+        if on_result:
+            on_result(result)
+
+    passed = sum(r["pass"] for r in results)
+    critical = sum(r["critical_error"] for r in results)
+    log.event("eval.done", f"{passed}/{len(results)} passed, {critical} critical.",
+              level="warn" if critical else "info", passed=passed, total=len(results), critical=critical)
+    log.finish(f"{passed}/{len(results)} passed, {critical} critical")
+    return {"run_id": log.id, "dataset": dataset, "model": settings.model,
+            "judged": use_judge, "results": results,
+            "passed": passed, "total": len(results), "critical": critical}
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Run the incident-agent evaluation scenarios.")
     parser.add_argument("--scenario", action="append", help="run only this scenario id (repeatable)")
@@ -99,58 +160,21 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     settings = load_settings()
-    if not settings.api_key:
-        print("OPENAI_API_KEY is not set. Add it to .env and run this again.")
-        return 2
-
-    store = Store(settings.db_path)
-    dataset = store.info()
-    store.close()
-    if not dataset:
-        print("No dataset has been ingested. Load one first:")
-        print("  python -m incident_agent.cli --ingest <file.jsonl>")
-        return 2
-
-    chosen = [s for s in load_scenarios() if not args.scenario or s["id"] in args.scenario]
-    if not chosen:
-        print("No scenario matched.")
-        return 2
-
-    log = Recorder(settings.log_db_path, "eval", f"{len(chosen)} scenarios on {dataset['filename']}")
-    log.event("eval.start", f"{len(chosen)} scenarios against {dataset['filename']}.",
-              model=settings.model, judge=not args.no_judge, dataset=dataset["filename"])
-
-    print(f"{dataset['filename']} | {dataset['event_count']} events | model {settings.model}"
-          + ("" if not args.no_judge else " | deterministic checks only") + "\n")
     print(f"{'id':<5} {'res':<5} {'tools':<6} {'score':<5} {'scenario':<34} notes")
     print("-" * 110)
+    try:
+        report = run_suite(settings, args.scenario, use_judge=not args.no_judge,
+                           on_result=lambda result: print(report_line(result)))
+    except EvalError as error:
+        print(error)
+        return 2
 
-    results = []
-    for scenario in chosen:
-        transcript = run_scenario(scenario, settings)
-        result = evaluate(scenario, transcript, settings, use_judge=not args.no_judge)
-        results.append(result)
-        print(report_line(result))
-        log.event(
-            "eval.scenario", f"{scenario['id']} {'passed' if result['pass'] else 'failed'}: {scenario['title']}",
-            level="warn" if not result["pass"] else "info",
-            scenario=scenario["id"], passed=result["pass"], critical=result["critical_error"],
-            coverage=result["required_tool_coverage"], scores=result["judge_scores"],
-        )
-
-    passed = sum(r["pass"] for r in results)
-    critical = sum(r["critical_error"] for r in results)
     print("-" * 110)
-    print(f"{passed}/{len(results)} passed, {critical} with a critical error.")
-    log.event("eval.done", f"{passed}/{len(results)} passed, {critical} critical.",
-              level="warn" if critical else "info", passed=passed, total=len(results), critical=critical)
-    log.finish(f"{passed}/{len(results)} passed, {critical} critical")
-
+    print(f"{report['passed']}/{report['total']} passed, {report['critical']} with a critical error.")
     if args.out:
-        args.out.write_text(json.dumps({"dataset": dataset, "model": settings.model,
-                                        "results": results}, indent=2), encoding="utf-8")
+        args.out.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"Report written to {args.out}.")
-    return 1 if passed < len(results) else 0
+    return 1 if report["passed"] < report["total"] else 0
 
 
 if __name__ == "__main__":

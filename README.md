@@ -24,7 +24,7 @@ python -m incident_agent.cli --ingest logs.jsonl  # load a dataset from the comm
 python -m incident_agent.cli                      # interactive
 python -m incident_agent.cli "your question"      # one question, then exit
 python -m evaluations.runner                      # the twelve evaluation scenarios
-pytest                                            # 197 tests, no API key needed
+pytest                                            # 209 tests, no API key needed
 ```
 
 Upload a log file with the **Upload data** button, then ask questions. Nothing works until a
@@ -143,7 +143,7 @@ Every tunable parameter is in `.env`. `.env.example` is the same file with notes
 | `AGENT_REASONING_EFFORT` | `low` | `minimal`/`low`/`medium`/`high`. Only sent when set. |
 | `AGENT_NOW` | `data` | `data` = the last event in the dataset. A fixed ISO timestamp pins it instead. |
 | `AGENT_DB_PATH` | `data/incident.db` | Where the ingested dataset is stored. |
-| `AGENT_LOG_DB_PATH` | `data/logs.db` | Where run logs are stored. Separate, so ingesting does not erase them. |
+| `AGENT_STATE_DB_PATH` | `data/state.db` | Conversations, run logs and evaluation results. Separate from the dataset, so uploading never erases them. |
 | `AGENT_PROMPTS_DIR` | `prompts/` | Where the prompt files live. |
 | `AGENT_MAX_LLM_STEPS` | `10` | Loop steps per turn. The cost bound per turn is this plus one. |
 | `AGENT_MAX_TOOL_CALLS` | `12` | Tool calls per turn, including rejected ones. |
@@ -171,7 +171,7 @@ src/incident_agent/
   prompts.py        loads the prompt files
   llm.py            OpenAI Responses adapter, and the scripted fake used by the tests
   config.py         every tunable parameter, read from the environment
-  logs.py           run logs: one run per ingest, turn or evaluation
+  state.py          conversations, run logs and evaluation results
   cli.py            interactive command line
   api.py            five HTTP endpoints
   static/index.html the web UI, no build step
@@ -182,12 +182,12 @@ src/incident_agent/
     executor.py     the guardrail pipeline for one tool call
     summaries.py    deterministic summaries, including spike detection
     time_resolver.py  time expressions to UTC ranges
-tests/              197 tests, no API key required
+tests/              209 tests, no API key required
 ```
 
 ## Tests
 
-`pytest` runs 197 tests against a scripted fake model. They are deterministic, free, and need no
+`pytest` runs 209 tests against a scripted fake model. They are deterministic, free, and need no
 network. `tests/sample_data.py` builds the dataset they share.
 
 | File | Covers |
@@ -200,8 +200,8 @@ network. `tests/sample_data.py` builds the dataset they share.
 | `test_summaries.py` | Spike detection, unusable baselines, insufficient data, truncation notices. |
 | `test_report.py` | Citation checks, confidence limits, the unverified and ledger fallbacks. |
 | `test_agent_loop.py` | Parallel calls, budget cut-off, stuck detection, forced final answer, repair, follow-ups. |
-| `test_api.py` | The endpoints, ingest, and session continuity. |
-| `test_logs.py` | What each workflow records, and that a failure is recorded before it propagates. |
+| `test_api.py` | The endpoints, ingest, evaluation control, and conversations surviving a restart. |
+| `test_state.py` | What each workflow records, and that a failure is recorded before it propagates. |
 | `test_evaluations.py` | The scenario file, tool-coverage matching, every deterministic check, the runner. |
 
 ## Evaluation
@@ -210,12 +210,19 @@ Twelve scenarios in `evaluations/scenarios.json`, written against the ingested d
 carries the question, the expected answer, the tools the investigation needs, claims the agent must
 not make, and whether an incident note is appropriate.
 
+Run it from the **Evaluation** tab, or from the command line:
+
 ```bash
 python -m evaluations.runner                      # all twelve
 python -m evaluations.runner --scenario E05       # one (repeatable)
 python -m evaluations.runner --no-judge           # deterministic checks only, no model grading
 python -m evaluations.runner --out report.json    # full results as JSON
 ```
+
+Either way the run is recorded. The tab shows each scenario as it is scored, the five judge
+dimensions as a row of coloured squares, and the reason for anything that failed. Past runs are
+listed underneath and can be reopened, so a change to a prompt or a parameter can be compared
+against the last run.
 
 Scoring is split deliberately.
 
@@ -238,7 +245,28 @@ Two scenarios inject faults through the store: `E08` times a metrics call out on
 ## Monitoring
 
 Every workflow — an ingest, an agent turn, an evaluation run — is recorded as a run with ordered
-events: the model steps, each tool call with status, attempts and duration, rejected responses, why
-a turn stopped early, and what the run produced. The **Monitoring** tab lists runs newest first;
-clicking one shows its events. Logs live in their own database, so replacing the dataset never
-erases the record of what happened.
+events. A turn reads as an account of the investigation:
+
+```
+turn.start    Was anything wrong with catalog-service on 23 September?
+model.step    step 1/10: 1 call(s) - resolve_time_range
+tool.call     #1 resolve_time_range(23 September) -> ok in 0ms | resolves to ...
+model.step    step 2/10: 4 call(s) - get_metrics, get_metrics, get_metrics, get_deployments
+tool.call     #2 get_metrics(catalog-service, error_rate, 00:00-23:55) -> ok in 6ms | baseline ...
+...
+turn.done     investigation_report: catalog-service had a significant incident on 23 September
+```
+
+Each tool call carries its position in the turn, the step it belonged to, the arguments that
+matter, the status, the attempt count, the duration and what it found. The **Monitoring** tab lists
+runs newest first; clicking one shows its events.
+
+## Persistence
+
+The dataset lives in `data/incident.db` and is replaced on every upload. Everything else lives in
+`data/state.db` and is not: conversations with their evidence ledgers, run logs, and evaluation
+results all survive both a new upload and a server restart.
+
+A conversation is reopened by the browser when you return to the page, and can be replayed from the
+database. One started against a previous dataset is kept as history rather than resumed, because
+its evidence refers to data that is no longer loaded.

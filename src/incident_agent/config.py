@@ -20,7 +20,7 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 ROOT = Path(__file__).resolve().parents[2]
 PROMPTS_DIR = ROOT / "prompts"
 DEFAULT_DB = ROOT / "data" / "incident.db"
-DEFAULT_LOG_DB = ROOT / "data" / "logs.db"
+DEFAULT_STATE_DB = ROOT / "data" / "state.db"
 
 
 def parse_iso(value: str) -> datetime:
@@ -100,7 +100,7 @@ class Settings:
     reasoning_effort: str | None = None
     api_key: str | None = None
     db_path: Path = DEFAULT_DB
-    log_db_path: Path = DEFAULT_LOG_DB
+    state_db_path: Path = DEFAULT_STATE_DB
     prompts_dir: Path = PROMPTS_DIR
     max_rows: int = 20
     max_window_days: int = 7
@@ -123,7 +123,7 @@ def load_settings() -> Settings:
         reasoning_effort=os.getenv("AGENT_REASONING_EFFORT", "").strip() or None,
         api_key=os.getenv("OPENAI_API_KEY"),
         db_path=Path(_env("AGENT_DB_PATH", str(DEFAULT_DB))),
-        log_db_path=Path(_env("AGENT_LOG_DB_PATH", str(DEFAULT_LOG_DB))),
+        state_db_path=Path(_env("AGENT_STATE_DB_PATH", str(DEFAULT_STATE_DB))),
         prompts_dir=Path(_env("AGENT_PROMPTS_DIR", str(PROMPTS_DIR))),
         max_rows=_int("AGENT_MAX_ROWS", 20),
         max_window_days=_int("AGENT_MAX_WINDOW_DAYS", 7),
