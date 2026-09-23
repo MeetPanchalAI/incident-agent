@@ -78,14 +78,57 @@ ingest time:
 If a service never reported something there are no rows for it and the tool returns nothing. The
 agent cannot reason over data that was never collected.
 
-For a dataset to try it with:
+### Bringing your own dataset
+
+Four things determine what the agent will be able to find in it.
+
+**Volume.** `error_rate` is errors divided by events in a one-minute bucket, so at five events a
+minute one error reads as 20%. Twenty or more events a minute per active service keeps the rate
+meaningful.
+
+**`target` belongs on the caller.** The edge `checkout-api -> orders-db` comes from checkout-api's
+own lines carrying `"target": "orders-db"`. Without it there is no dependency graph. A service that
+is only ever called still appears, but has no metrics of its own.
+
+**`latency_ms` is per service.** A service that never reports it has no `latency_p95_ms`, and the
+agent will correctly say so rather than estimate one.
+
+**Variety, if you want to test judgement rather than lookup.** Useful situations to include:
+
+| Situation | What it tests |
+|---|---|
+| A service that is fine throughout | Whether the agent says "nothing is wrong" instead of inventing a cause |
+| An incident with one clear cause | The basic investigation |
+| Two plausible causes minutes apart | Whether it holds both open instead of picking one |
+| An upstream service degrading first | Whether it follows dependencies rather than stopping at the symptom |
+| A deployment long before an unrelated problem | Whether it blames the nearest deployment regardless |
+| A service missing `latency_ms` | Whether it reports the gap instead of filling it |
+
+For a small working example:
 
 ```bash
 python -m tests.sample_data > sample_logs.jsonl
 ```
 
-That is the same generator the tests use: two hours across three services, with a deployment, an
-error spike and a database degrading underneath it.
+That is the generator the tests use: two hours, three services, one deployment, an error spike and
+a database degrading underneath it.
+
+## The dataset used here
+
+About 6,600 JSONL records, roughly 1.3 MB, covering 48 hours from 2026-09-22 to 2026-09-23 across
+ten services: `api-gateway`, `checkout-api`, `payment-service`, `catalog-service`, `auth-service`,
+`recommendation-service`, `notification-service`, `orders-worker`, `search-service` and
+`inventory-service`.
+
+It is not random traffic. Each of the situations in the table above is present, plus independent
+incidents in search, auth and inventory, cross-service traces
+(`api-gateway -> checkout-api -> orders-db`), and normal background noise: latency variation,
+occasional 4xx/5xx/429, several deployments.
+
+It also contains a few deliberately broken records — a missing message, an invalid timestamp, an
+invalid log level — to exercise ingest validation. Ingest skips them, counts them, and shows the
+reason for each; it does not silently drop them. The ingest report is the source of truth for what
+actually loaded.
 
 ## Configuration
 
