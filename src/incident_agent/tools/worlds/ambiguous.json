@@ -1,0 +1,57 @@
+{
+  "name": "ambiguous",
+  "description": "Two plausible causes one minute apart: a checkout-api deployment at 14:32 and an orders-db failover at 14:33. The available evidence does not separate them.",
+  "metrics": {
+    "checkout-api": {
+      "error_rate": {
+        "baseline": 0.008,
+        "noise": 0.002,
+        "anomaly": {
+          "start": "2026-09-22T14:36:00Z",
+          "peak_at": "2026-09-22T14:41:00Z",
+          "end": "2026-09-22T15:20:00Z",
+          "peak": 0.164
+        }
+      },
+      "latency_p95_ms": {
+        "baseline": 180,
+        "noise": 20,
+        "anomaly": {
+          "start": "2026-09-22T14:36:00Z",
+          "peak_at": "2026-09-22T14:46:00Z",
+          "end": "2026-09-22T15:20:00Z",
+          "peak": 2250
+        }
+      }
+    },
+    "orders-db": {
+      "latency_p95_ms": {
+        "baseline": 12,
+        "noise": 3,
+        "anomaly": {
+          "start": "2026-09-22T14:34:00Z",
+          "peak_at": "2026-09-22T14:44:00Z",
+          "end": "2026-09-22T15:21:00Z",
+          "peak": 295
+        }
+      }
+    }
+  },
+  "deployments": [
+    {
+      "service": "checkout-api",
+      "version": "v142",
+      "deployed_at": "2026-09-22T14:32:00Z",
+      "status": "success",
+      "author": "s.mehta"
+    }
+  ],
+  "logs": [
+    {"service": "checkout-api", "at": "2026-09-22T14:32:12Z", "level": "INFO", "message": "deployment started: checkout-api v142"},
+    {"service": "checkout-api", "at": "2026-09-22T14:32:55Z", "level": "INFO", "message": "deployment complete: checkout-api v142 serving traffic"},
+    {"service": "orders-db", "at": "2026-09-22T14:33:05Z", "level": "WARN", "message": "primary unreachable, failover to replica-2 initiated"},
+    {"service": "orders-db", "at": "2026-09-22T14:34:40Z", "level": "INFO", "message": "failover complete, replica-2 promoted to primary"},
+    {"service": "checkout-api", "repeat": {"from": "2026-09-22T14:37:00Z", "to": "2026-09-22T15:17:00Z", "every_minutes": 2}, "level": "ERROR", "message": "database connection timeout after 5000ms (orders-db)"},
+    {"service": "checkout-api", "at": "2026-09-22T15:21:10Z", "level": "INFO", "message": "error rate returned to baseline"}
+  ]
+}

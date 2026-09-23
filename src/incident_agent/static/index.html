@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident Agent</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --line: #e2e5ea; --text: #16181d;
+    --muted: #666e7a; --accent: #2f5fd0; --warn: #9a5b00; --bad: #a12a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1c1f25; --line: #2b2f37; --text: #e8eaed;
+      --muted: #9aa2ae; --accent: #7aa2f7; --warn: #d8a657; --bad: #e07070;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; gap: 12px; align-items: center; padding: 12px 20px;
+    border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; flex: 1; }
+  select, button {
+    font: inherit; font-size: 14px; padding: 6px 10px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer;
+  }
+  button:hover, select:hover { border-color: var(--accent); }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 20px 140px; }
+  .turn { margin-bottom: 26px; }
+  .user {
+    background: var(--panel); border-left: 3px solid var(--accent);
+    padding: 10px 14px; border-radius: 0 6px 6px 0; margin-bottom: 14px; white-space: pre-wrap;
+  }
+  .lede { margin: 0 0 14px; }
+  section { margin-bottom: 14px; }
+  h2 {
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 6px; font-weight: 600;
+  }
+  ul { margin: 0; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  .cite { color: var(--muted); font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .badge {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--panel); margin-right: 6px; text-transform: uppercase;
+  }
+  .badge.high { border-color: var(--accent); color: var(--accent); }
+  .badge.medium { border-color: var(--warn); color: var(--warn); }
+  .banner {
+    border: 1px solid var(--bad); color: var(--bad); border-radius: 6px;
+    padding: 8px 12px; margin-bottom: 12px; font-size: 14px;
+  }
+  details { border: 1px solid var(--line); border-radius: 6px; margin-top: 12px; }
+  summary { cursor: pointer; padding: 8px 12px; font-size: 13px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 6px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+  td.k { font-family: ui-monospace, Menlo, Consolas, monospace; white-space: nowrap; color: var(--muted); }
+  td.s { width: 1%; white-space: nowrap; }
+  .st-ok { color: var(--accent); } .st-empty { color: var(--muted); }
+  .st-error, .st-timeout, .st-invalid_arguments, .st-duplicate, .st-budget_exceeded { color: var(--warn); }
+  footer {
+    position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg);
+    border-top: 1px solid var(--line); padding: 12px 20px;
+  }
+  .composer { max-width: 860px; margin: 0 auto; display: flex; gap: 10px; }
+  textarea {
+    flex: 1; resize: none; font: inherit; padding: 9px 12px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Incident Agent</h1>
+  <select id="world" title="Mock world"></select>
+  <button id="reset">New session</button>
+</header>
+
+<main id="log"></main>
+
+<footer>
+  <div class="composer">
+    <textarea id="input" rows="2" placeholder="Investigate checkout-api errors yesterday between 2 PM and 4 PM."></textarea>
+    <button id="send">Send</button>
+  </div>
+</footer>
+
+<script>
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+const worldSelect = document.getElementById('world');
+let sessionId = null;
+
+const el = (tag, cls, text) => {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+
+function list(parent, title, items, render) {
+  if (!items || !items.length) return;
+  const section = el('section');
+  section.append(el('h2', null, title));
+  const ul = el('ul');
+  items.forEach(item => ul.append(render ? render(item) : el('li', null, item)));
+  section.append(ul);
+  parent.append(section);
+}
+
+function renderResponse(parent, r) {
+  if (r.unverified) parent.append(el('div', 'banner', 'Unverified: this response failed validation.'));
+  parent.append(el('p', 'lede', r.message));
+
+  list(parent, 'Observed facts', r.observed_facts, f => {
+    const li = el('li', null, f.statement + ' ');
+    li.append(el('span', 'cite', '[' + f.evidence_ids.join(', ') + ']'));
+    return li;
+  });
+
+  list(parent, 'Hypotheses', r.hypotheses, h => {
+    const li = el('li');
+    li.append(el('span', 'badge ' + h.confidence, h.confidence));
+    li.append(document.createTextNode(h.statement + ' '));
+    const bits = [];
+    if (h.supporting_evidence_ids.length) bits.push('supported by ' + h.supporting_evidence_ids.join(', '));
+    if (h.contradicting_evidence_ids.length) bits.push('contradicted by ' + h.contradicting_evidence_ids.join(', '));
+    if (h.missing_evidence.length) bits.push('missing: ' + h.missing_evidence.join('; '));
+    if (bits.length) li.append(el('span', 'cite', '[' + bits.join(' · ') + ']'));
+    return li;
+  });
+
+  if (r.hypotheses.length || r.response_type === 'investigation_report') {
+    const section = el('section');
+    section.append(el('h2', null, 'Likely cause'));
+    section.append(el('div', r.likely_cause ? null : 'empty', r.likely_cause || 'Inconclusive'));
+    parent.append(section);
+  }
+
+  list(parent, 'Recommended actions', r.recommended_actions);
+  list(parent, 'Gaps', r.gaps);
+  list(parent, 'Assumptions', r.assumptions);
+  list(parent, 'Warnings', r.warnings);
+}
+
+function renderTrace(parent, data) {
+  const details = el('details');
+  details.append(el('summary', null,
+    `Tool trace — ${data.trace.length} tool calls, ${data.llm_calls} model calls, ${data.steps} steps` +
+    (data.stopped_early ? ' (stopped early)' : '')));
+  const table = el('table');
+  if (!data.trace.length) {
+    const row = table.insertRow();
+    row.insertCell().append(el('span', 'empty', 'No tool calls.'));
+  }
+  data.trace.forEach(t => {
+    const row = table.insertRow();
+    row.insertCell().className = 'k';
+    row.cells[0].textContent = t.observation_id;
+    const status = el('span', 'st-' + t.status, t.status + (t.attempts > 1 ? ` x${t.attempts}` : ''));
+    row.insertCell().className = 's';
+    row.cells[1].append(status);
+    const args = Object.entries(t.args).map(([k, v]) => `${k}=${v}`).join(', ');
+    row.insertCell().append(el('div', null, `${t.tool}(${args})`), el('div', 'cite', t.summary));
+  });
+  details.append(table);
+  parent.append(details);
+}
+
+async function post(path, body) {
+  const response = await fetch(path, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+  return response.json();
+}
+
+async function ask() {
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = '';
+  send.disabled = true;
+
+  const turn = el('div', 'turn');
+  turn.append(el('div', 'user', message));
+  const pending = el('div', 'meta', 'Investigating…');
+  turn.append(pending);
+  log.append(turn);
+  window.scrollTo(0, document.body.scrollHeight);
+
+  try {
+    const data = await post('/api/chat', {message, session_id: sessionId, world: worldSelect.value});
+    sessionId = data.session_id;
+    pending.remove();
+    renderResponse(turn, data.response);
+    renderTrace(turn, data);
+  } catch (error) {
+    pending.remove();
+    turn.append(el('div', 'banner', 'Request failed: ' + error.message));
+  } finally {
+    send.disabled = false;
+    input.focus();
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+}
+
+async function reset() {
+  const data = await post('/api/reset', {world: worldSelect.value});
+  sessionId = data.session_id;
+  log.replaceChildren();
+  input.focus();
+}
+
+send.addEventListener('click', ask);
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+});
+worldSelect.addEventListener('change', reset);
+document.getElementById('reset').addEventListener('click', reset);
+
+fetch('/health').then(r => r.json()).then(info => {
+  info.worlds.forEach(w => worldSelect.append(new Option(w, w)));
+  worldSelect.value = info.worlds.includes('incident') ? 'incident' : info.worlds[0];
+  input.focus();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+{
+  "name": "upstream",
+  "description": "payment-service latency rises because its upstream dependency payment-gateway degrades first. No deployment is involved.",
+  "metrics": {
+    "payment-service": {
+      "latency_p95_ms": {
+        "baseline": 120,
+        "noise": 15,
+        "anomaly": {
+          "start": "2026-09-22T14:35:00Z",
+          "peak_at": "2026-09-22T14:50:00Z",
+          "end": "2026-09-22T15:30:00Z",
+          "peak": 1400
+        }
+      },
+      "error_rate": {
+        "baseline": 0.004,
+        "noise": 0.001,
+        "anomaly": {
+          "start": "2026-09-22T14:38:00Z",
+          "peak_at": "2026-09-22T14:52:00Z",
+          "end": "2026-09-22T15:28:00Z",
+          "peak": 0.061
+        }
+      }
+    },
+    "payment-gateway": {
+      "latency_p95_ms": {
+        "baseline": 80,
+        "noise": 10,
+        "anomaly": {
+          "start": "2026-09-22T14:30:00Z",
+          "peak_at": "2026-09-22T14:45:00Z",
+          "end": "2026-09-22T15:35:00Z",
+          "peak": 1200
+        }
+      }
+    }
+  },
+  "deployments": [
+    {
+      "service": "payment-service",
+      "version": "v88",
+      "deployed_at": "2026-09-19T10:05:00Z",
+      "status": "success",
+      "author": "a.lindqvist"
+    }
+  ],
+  "logs": [
+    {"service": "payment-gateway", "at": "2026-09-22T14:31:00Z", "level": "WARN", "message": "request queue depth 840, shedding load"},
+    {"service": "payment-service", "repeat": {"from": "2026-09-22T14:36:00Z", "to": "2026-09-22T15:27:00Z", "every_minutes": 3}, "level": "ERROR", "message": "upstream call to payment-gateway timed out after 3000ms"},
+    {"service": "payment-service", "at": "2026-09-22T14:40:00Z", "level": "WARN", "message": "circuit breaker half-open for payment-gateway"},
+    {"service": "payment-service", "at": "2026-09-22T15:31:00Z", "level": "INFO", "message": "upstream latency back to normal"}
+  ]
+}
