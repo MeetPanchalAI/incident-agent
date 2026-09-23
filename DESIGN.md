@@ -362,6 +362,19 @@ If the payload cannot be parsed at all, code builds the response from the ledger
 successful observations as facts, the failures as gaps, no hypotheses. The user always gets an
 answer and always knows its status.
 
+### How much it says
+
+The answer is the size of the question, and that is enforced in two places rather than asked for in
+one. The prompt says to answer what was asked and stop — a lookup deserves a sentence, an
+investigation a short report, and length is not thoroughness. The schema then bounds it: 8 observed
+facts, 3 hypotheses, 3 recommended actions, 5 gaps, 1200 characters of message.
+
+The bounds matter because the failure mode is not verbosity for its own sake. An agent that has
+made ten tool calls is under pressure to justify all ten, and the natural way to do that is to list
+every result as an observed fact. That turns a one-line answer into a report nobody reads, and it
+buries the two facts that actually matter. Investigating widely and reporting briefly are separate
+things, and only the second should be rationed.
+
 ### Confidence
 
 Confidence describes how well the evidence supports a hypothesis. It is not a probability and not
@@ -482,7 +495,8 @@ note created where none was wanted. Wasted calls are counted and reported rather
 because "spent two extra calls" is information, not a defect.
 
 **An LLM judge only for what needs reading**: factual correctness, grounding, uncertainty about
-causation, completeness, actionability — 0, 1 or 2 each. It can also raise a critical error.
+causation, completeness, actionability — 0, 1 or 2 each. It can also raise a critical error. Its
+prompt is `prompts/judge.md`, a file like every other prompt, and it is told not to reward length.
 
 The suite runs from the command line or from the Evaluation tab. From the tab it runs on a worker
 thread and the page polls for progress, because twelve scenarios take minutes and a request that

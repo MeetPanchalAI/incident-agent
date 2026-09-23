@@ -214,3 +214,31 @@ def test_the_ledger_fallback_never_invents_a_cause(session):
     obs(session, tool="get_metrics")
     outcome = build_from_ledger(session, ["no final response"])
     assert outcome.response.likely_cause is None
+
+
+# -- the answer stays the size of the question -----------------------------
+
+
+def test_the_schema_caps_how_much_can_be_said(session):
+    """An answer is bounded by the schema, not only asked for in the prompt."""
+    too_much = payload(
+        message="x" * 1300,
+        observed_facts=[{"statement": "f", "evidence_ids": ["obs_1"]} for _ in range(9)],
+        recommended_actions=["a"] * 4,
+        gaps=["g"] * 6,
+    )
+    _, errors = validate(too_much, session)
+    joined = " ".join(errors)
+    assert "message" in joined and "observed_facts" in joined
+    assert "recommended_actions" in joined and "gaps" in joined
+
+
+def test_a_short_answer_is_accepted_as_it_is(session):
+    observation = obs(session, tool="get_deployments")
+    response, errors = validate(payload(
+        response_type="answer",
+        message="Yes. checkout-api v142 was deployed at 14:32 UTC.",
+        observed_facts=[{"statement": "v142 deployed at 14:32", "evidence_ids": [observation.id]}],
+    ), session)
+    assert errors == []
+    assert response.hypotheses == [] and response.recommended_actions == []

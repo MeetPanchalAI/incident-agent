@@ -24,7 +24,7 @@ python -m incident_agent.cli --ingest logs.jsonl  # load a dataset from the comm
 python -m incident_agent.cli                      # interactive
 python -m incident_agent.cli "your question"      # one question, then exit
 python -m evaluations.runner                      # the twelve evaluation scenarios
-pytest                                            # 209 tests, no API key needed
+pytest                                            # 212 tests, no API key needed
 ```
 
 Upload a log file with the **Upload data** button, then ask questions. Nothing works until a
@@ -156,8 +156,30 @@ Every tunable parameter is in `.env`. `.env.example` is the same file with notes
 | `AGENT_SPIKE_MULTIPLIER` | `3` | A spike is above `max(multiplier x baseline, baseline + the metric's minimum difference)`. |
 | `AGENT_MIN_METRIC_POINTS` | `5` | Below this, no spike claim is made. |
 
-Prompts are files in `prompts/`: `system.md` plus the four messages the loop sends back to the
-model. Edit them and re-run to see the difference.
+Every prompt is a file in `prompts/`, none is a literal in the code: `system.md` orchestrates the
+agent, four short files are the messages the loop sends back to the model, and `judge.md` grades an
+evaluation. Edit them and re-run to see the difference; a test asserts the directory and the code
+agree on which files exist.
+
+## Answer length
+
+The answer is the size of the question. A lookup gets a sentence; an investigation gets a short
+report. Both are bounded by the schema, not only asked for in the prompt: at most 8 observed facts,
+3 hypotheses, 3 recommended actions, 5 gaps, and a message of 1200 characters.
+
+```
+Q: Was there a deployment of checkout-api between 14:00 and 15:00 UTC?
+   1 tool call, 86 characters
+   "Yes. checkout-api version v142 was deployed successfully at 14:32 UTC on 22 September."
+   1 fact, no hypotheses, no recommended actions
+
+Q: Investigate why checkout-api had increased errors that afternoon.
+   8 tool calls, 504 characters
+   5 facts, 2 hypotheses, 3 recommended actions, 2 gaps
+```
+
+Investigating widely and reporting briefly are separate things. The agent still makes every call it
+needs; it just does not read the transcript back to you.
 
 ## Layout
 
@@ -182,12 +204,12 @@ src/incident_agent/
     executor.py     the guardrail pipeline for one tool call
     summaries.py    deterministic summaries, including spike detection
     time_resolver.py  time expressions to UTC ranges
-tests/              209 tests, no API key required
+tests/              212 tests, no API key required
 ```
 
 ## Tests
 
-`pytest` runs 209 tests against a scripted fake model. They are deterministic, free, and need no
+`pytest` runs 212 tests against a scripted fake model. They are deterministic, free, and need no
 network. `tests/sample_data.py` builds the dataset they share.
 
 | File | Covers |

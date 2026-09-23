@@ -16,7 +16,7 @@ from string import Template
 from .config import Settings, format_iso
 from .tools.store import METRICS
 
-FILES = ("system", "submit_not_alone", "submit_invalid", "force_final", "stopped_early")
+FILES = ("system", "submit_not_alone", "submit_invalid", "force_final", "stopped_early", "judge")
 
 
 def load(directory: Path, name: str) -> str:

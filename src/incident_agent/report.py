@@ -22,7 +22,7 @@ RANK = {"low": 0, "medium": 1, "high": 2}
 
 class ObservedFact(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    statement: str = Field(max_length=500, description="A fact taken directly from a tool result.")
+    statement: str = Field(max_length=300, description="One fact, taken directly from a tool result.")
     evidence_ids: list[str] = Field(
         min_length=1, max_length=10, description="Observation IDs this fact comes from, e.g. ['obs_002']."
     )
@@ -30,7 +30,7 @@ class ObservedFact(BaseModel):
 
 class Hypothesis(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    statement: str = Field(max_length=500, description="A possible explanation. Not a fact.")
+    statement: str = Field(max_length=300, description="A possible explanation. Not a fact.")
     supporting_evidence_ids: list[str] = Field(default_factory=list, max_length=10)
     contradicting_evidence_ids: list[str] = Field(default_factory=list, max_length=10)
     missing_evidence: list[str] = Field(
@@ -47,19 +47,29 @@ class FinalResponse(BaseModel):
         description="'answer' for a direct question, 'clarification' when you must ask the user "
         "something before investigating, 'investigation_report' for a full investigation."
     )
-    message: str = Field(max_length=2000, description="The direct answer, or the clarifying question.")
+    message: str = Field(
+        max_length=1200,
+        description="The answer itself, leading with the conclusion. A few sentences; a lookup "
+        "needs only one.")
     observed_facts: list[ObservedFact] = Field(
-        default_factory=list, max_length=20, description="Only things a tool actually returned."
+        default_factory=list, max_length=8,
+        description="Only the facts the answer rests on, and only things a tool returned. "
+        "Not a record of every call you made."
     )
-    hypotheses: list[Hypothesis] = Field(default_factory=list, max_length=5)
+    hypotheses: list[Hypothesis] = Field(
+        default_factory=list, max_length=3,
+        description="Only explanations you actually weighed. A factual question may have none.")
     likely_cause: str | None = Field(
         default=None, max_length=500, description="Leave null when the evidence is inconclusive."
     )
-    recommended_actions: list[str] = Field(default_factory=list, max_length=10)
+    recommended_actions: list[str] = Field(
+        default_factory=list, max_length=3,
+        description="What you would genuinely do next. Empty if the question did not call for any.")
     gaps: list[str] = Field(
-        default_factory=list, max_length=10, description="Failed tool calls, missing data, contradictions."
+        default_factory=list, max_length=5,
+        description="Only what materially limits the answer: failed calls, missing data, contradictions."
     )
-    assumptions: list[str] = Field(default_factory=list, max_length=10)
+    assumptions: list[str] = Field(default_factory=list, max_length=5)
 
 
 @dataclass

@@ -103,7 +103,7 @@ def test_the_system_prompt_says_when_there_is_no_data(tmp_path):
 
 
 def test_prompts_can_be_pointed_somewhere_else(tmp_path, dataset):
-    for name in ("system", "submit_not_alone", "submit_invalid", "force_final", "stopped_early"):
+    for name in ("system", "submit_not_alone", "submit_invalid", "force_final", "stopped_early", "judge"):
         (tmp_path / f"{name}.md").write_text(f"{name} for $now", encoding="utf-8")
     prompts = Prompts(Settings(now=NOW, prompts_dir=tmp_path), ["checkout-api"], "sample")
     assert prompts.system == "system for 2026-09-22T16:00:00Z"
@@ -113,3 +113,12 @@ def test_prompts_can_be_pointed_somewhere_else(tmp_path, dataset):
 def test_a_missing_prompt_file_names_what_is_expected(tmp_path):
     with pytest.raises(FileNotFoundError, match="system.md"):
         Prompts(Settings(now=NOW, prompts_dir=tmp_path), [], "sample")
+
+
+def test_every_prompt_the_code_asks_for_exists_as_a_file():
+    """Prompts live in files, all of them; none is a literal in the code."""
+    from incident_agent.config import PROMPTS_DIR
+    from incident_agent.prompts import FILES, load
+
+    assert set(FILES) == {p.stem for p in PROMPTS_DIR.glob("*.md")}
+    assert all(load(PROMPTS_DIR, name) for name in FILES)

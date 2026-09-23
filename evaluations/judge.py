@@ -13,8 +13,11 @@ import json
 import re
 from typing import Any
 
+from string import Template
+
 from incident_agent.config import Settings
 from incident_agent.llm import OpenAIClient
+from incident_agent.prompts import load
 
 CALL = re.compile(r"^(\w+)\s*\(([^)]*)\)$")
 TIME_LIKE = re.compile(r"\d{1,2}:\d{2}|utc|^\.\.\.$", re.I)
@@ -123,35 +126,21 @@ def deterministic(scenario: dict, transcript: dict) -> dict:
 
 
 def judge(scenario: dict, transcript: dict, settings: Settings) -> dict:
-    """Ask the model to score the parts that need reading."""
+    """Ask the model to score the parts that need reading. The prompt is a file."""
     final = transcript["turns"][-1]
     response = final["response"]
-    prompt = f"""You are grading an incident investigation agent. Score only what is asked for.
-
-QUESTION
-{final["question"]}
-
-EXPECTED ANSWER
-{scenario["expected_answer"]}
-
-CLAIMS THE AGENT MUST NOT MAKE
-{json.dumps(scenario.get("forbidden_claims", []), indent=1)}
-
-THE AGENT'S ANSWER
-{response["message"]}
-
-observed facts: {json.dumps([f["statement"] for f in response["observed_facts"]], indent=1)}
-hypotheses: {json.dumps([f'({h["confidence"]}) {h["statement"]}' for h in response["hypotheses"]], indent=1)}
-likely cause: {response["likely_cause"]}
-recommended actions: {json.dumps(response["recommended_actions"], indent=1)}
-gaps: {json.dumps(response["gaps"], indent=1)}
-
-TOOLS IT CALLED
-{json.dumps([f'{o["tool"]} -> {o["status"]}' for o in transcript["observations"]], indent=1)}
-
-Exact wording does not matter. Facts, grounding in the evidence, appropriate uncertainty about
-causation, completeness against the expected answer, and useful next steps do."""
-
+    prompt = Template(load(settings.prompts_dir, "judge")).safe_substitute(
+        question=final["question"],
+        expected_answer=scenario["expected_answer"],
+        forbidden_claims=json.dumps(scenario.get("forbidden_claims", []), indent=1),
+        message=response["message"],
+        observed_facts=json.dumps([f["statement"] for f in response["observed_facts"]], indent=1),
+        hypotheses=json.dumps([f'({h["confidence"]}) {h["statement"]}' for h in response["hypotheses"]], indent=1),
+        likely_cause=response["likely_cause"],
+        recommended_actions=json.dumps(response["recommended_actions"], indent=1),
+        gaps=json.dumps(response["gaps"], indent=1),
+        tools=json.dumps([f'{o["tool"]} -> {o["status"]}' for o in transcript["observations"]], indent=1),
+    )
     reply = OpenAIClient(settings).chat(
         [{"role": "user", "content": prompt}], [JUDGE_TOOL], force="submit_judgement")
     if not reply.tool_calls:
