@@ -19,7 +19,7 @@ adversarially, twice. That was the most useful part. Two findings changed the de
   unrepeatable and permanently uncitable, leaving the agent with no way to get the data and no way
   to talk about it. Only `ok` and `empty` results are cached now.
 
-**Implementation.** The time-resolver grammar, the mock backend's metric generation, the guardrail
+**Implementation.** The time-resolver grammar, the ingest and derivation pipeline, the guardrail
 pipeline, the web UI, and most of the tests. I reviewed each file and ran the suite after every
 step.
 
@@ -29,12 +29,12 @@ code.
 ## Where I rejected or corrected what it produced
 
 **A design recommendation I overruled.** The review argued for moving a `rollback_deployment` tool
-with a human-approval checkpoint into phase 1 and pushing the web UI to phase 2, on the grounds that
-the rollback scenario tests nothing if the agent has no rollback tool to refuse. The reasoning is
-fair, but the brief makes the rollback action optional and cautions against building a UI-heavy
-product, while I wanted a working interface to demonstrate the agent. I kept the UI in phase 1,
-left the approval checkpoint designed but unbuilt, and wrote down why in DESIGN.md rather than
-leaving it looking like an oversight.
+with a human-approval checkpoint in early, and pushing the web UI back, on the grounds that a
+rollback request tests nothing if the agent has no rollback tool to refuse. The reasoning is fair,
+but the brief makes the rollback action optional and cautions against building a UI-heavy product,
+while I wanted a working interface to drive the agent with. I kept the UI, left the approval
+checkpoint designed but unbuilt, and wrote down why in DESIGN.md rather than leaving it looking
+like an oversight.
 
 **A bug the tests caught.** De-duplication was applied to every tool, including
 `create_incident_note`. Queries are idempotent, so returning the earlier result for a repeat is
@@ -48,6 +48,20 @@ validates and summarises before it classifies emptiness — found by the test fo
 the ISO timestamp pattern accepted a space separator, which made `2026-09-22 from 14:00 to 16:00`
 parse as a single timestamp instead of a date plus a clock range; requiring the `T` separator
 removed the ambiguity.
+
+**A bug only visible in a real answer.** The first version generated metrics procedurally from
+fixtures, and fell back to defaults for any metric a service had never emitted. Watching a real
+investigation, I found the agent reporting *"orders-db, payment-gateway, payment-service and
+web-frontend had no detected error-rate spike"* as an observed fact, with four citations — all of
+it invented, and it had steered the agent away from the service that was actually failing. In a
+system whose whole premise is that nothing unverified is presented as fact, the layer underneath
+was manufacturing evidence. Replacing the fixtures with a database and deriving metrics from real
+events removed the possibility rather than guarding against it.
+
+**A bug the tests caught twice over.** Moving service validation out of Pydantic, I gave two
+validators in a class hierarchy the same method name. Pydantic registers validators by name, so the
+subclass silently replaced the parent's, and service names stopped being normalised. Nothing
+errored; a de-duplication test just started failing for an unrelated-looking reason.
 
 ## One thing worth noting
 

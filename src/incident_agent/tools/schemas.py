@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .mock_backend import known_metrics, known_services
+from .store import METRICS
 
 # --------------------------------------------------------------------------
 # Argument models
@@ -25,15 +25,15 @@ class ToolArgs(BaseModel):
 
 
 class _ServiceField(ToolArgs):
-    service: str = Field(description="Service name. Must be one of the known services.")
+    # Which services exist depends on the ingested dataset, so membership is
+    # checked by the executor against the store, not here.
+    service: str = Field(min_length=1, max_length=80,
+                         description="Service name. Must be one of the services in the dataset.")
 
     @field_validator("service")
     @classmethod
-    def _known(cls, value: str) -> str:
-        name = value.strip().lower()
-        if name not in known_services():
-            raise ValueError(f"unknown service '{value}'. Known services: {', '.join(known_services())}")
-        return name
+    def _normalise_service(cls, value: str) -> str:
+        return value.strip().lower()
 
 
 class _WindowFields(_ServiceField):
@@ -51,21 +51,21 @@ class SearchLogsArgs(_WindowFields):
 
     @field_validator("query")
     @classmethod
-    def _normalize(cls, value: str) -> str:
+    def _normalise_query(cls, value: str) -> str:
         # Matching is case-insensitive, so normalising here also makes two
         # differently-cased versions of the same search de-duplicate.
         return value.strip().lower()
 
 
 class GetMetricsArgs(_WindowFields):
-    metric: str = Field(description="Metric name. Must be one of the known metrics.")
+    metric: str = Field(description=f"One of: {', '.join(sorted(METRICS))}.")
 
     @field_validator("metric")
     @classmethod
-    def _known(cls, value: str) -> str:
+    def _known_metric(cls, value: str) -> str:
         name = value.strip().lower()
-        if name not in known_metrics():
-            raise ValueError(f"unknown metric '{value}'. Known metrics: {', '.join(known_metrics())}")
+        if name not in METRICS:
+            raise ValueError(f"unknown metric '{value}'. Known metrics: {', '.join(sorted(METRICS))}")
         return name
 
 
@@ -98,7 +98,7 @@ class CreateIncidentNoteArgs(ToolArgs):
 
     @field_validator("recommended_actions")
     @classmethod
-    def _bounded(cls, value: list[str]) -> list[str]:
+    def _bounded_actions(cls, value: list[str]) -> list[str]:
         for item in value:
             if len(item) > 300:
                 raise ValueError("each recommended action must be at most 300 characters")
@@ -174,7 +174,8 @@ TOOL_SPECS: list[ToolSpec] = [
         description=(
             "Return a time series for one metric on one service, with a summary stating the baseline, "
             "whether a spike was detected, and when it started. Usually the first step when asked why "
-            "something went wrong, because it establishes whether anything actually changed."
+            "something went wrong, because it establishes whether anything actually changed. "
+            "A service that never reported a metric has no data for it, and you will get no records."
         ),
         args_model=GetMetricsArgs,
         category="data",

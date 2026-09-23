@@ -10,7 +10,7 @@ from tests.conftest import WINDOW, service, submit
 DEPLOYS = ("get_deployments", {"service": "checkout-api", **WINDOW})
 DEPS = ("get_service_dependencies", {"service": "checkout-api"})
 METRICS = ("get_metrics", {"service": "checkout-api", "metric": "error_rate", **WINDOW})
-BAD = ("get_deployments", {"service": "nope", **WINDOW})
+BAD = ("get_deployments", {"service": "not-a-service", **WINDOW})
 DONE = ("submit_response", submit())
 
 

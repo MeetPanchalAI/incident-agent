@@ -7,10 +7,11 @@ import pytest
 from tests.conftest import WINDOW, call
 
 
-def test_unknown_service_is_rejected_and_the_error_lists_the_valid_names(executor, session):
+def test_unknown_service_is_rejected_and_the_error_lists_the_dataset_services(executor, session):
     observation = call(executor, session, "get_deployments", {"service": "billing-api", **WINDOW})
     assert observation.status == "invalid_arguments"
     assert "checkout-api" in observation.summary
+    assert "billing-api" in observation.summary
 
 
 def test_unknown_metric_is_rejected_and_the_error_lists_the_valid_names(executor, session):
@@ -75,5 +76,5 @@ def test_malformed_json_arguments_are_rejected(executor, session):
 
 
 def test_a_rejected_call_still_costs_budget(executor, session, budget):
-    call(executor, session, "get_deployments", {"service": "nope", **WINDOW}, budget=budget)
+    call(executor, session, "get_deployments", {"service": "not-a-service", **WINDOW}, budget=budget)
     assert budget.tool_calls_used == 1

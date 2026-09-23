@@ -18,7 +18,7 @@ no API key and no network.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 
 from .config import Settings
@@ -31,7 +31,6 @@ class LLMReply:
 
     items: list[dict]
     tool_calls: list[ToolCall]
-    usage: dict = field(default_factory=dict)
 
 
 class LLMClient(Protocol):
@@ -89,11 +88,7 @@ class OpenAIClient:
             for item in response.output
             if item.type == "function_call"
         ]
-        return LLMReply(
-            items=[item.model_dump(exclude_none=True) for item in response.output],
-            tool_calls=calls,
-            usage=response.usage.model_dump() if response.usage else {},
-        )
+        return LLMReply(items=[item.model_dump(exclude_none=True) for item in response.output], tool_calls=calls)
 
 
 class FakeLLM:

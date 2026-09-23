@@ -9,6 +9,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -22,7 +23,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-incident_agent = ["tools/worlds/*.json", "static/*.html"]
+incident_agent = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -17,9 +17,10 @@ Browser (index.html) ─┐                        ┌─ CLI (cli.py)
                                                                         → summarise → observation
                                                                                      │
                                                                                      ▼
-                                                                        Mock backend
-                                                                        JSON worlds rebased onto the
-                                                                        clock, injected faults
+                                                                        Store (SQLite)
+                                                                        events, and the metrics,
+                                                                        deployments and dependencies
+                                                                        derived from them
 ```
 
 The CLI, the HTTP API and the tests all call the same `AgentService`. The API and the UI hold no
@@ -28,12 +29,12 @@ logic of their own and cannot bypass any guardrail.
 **Nothing tunable is hard-coded.** The model, temperature and reasoning effort, every budget, the
 spike-detection thresholds, the result limits and the clock all come from `.env` through one
 `Settings` object that is threaded explicitly rather than read from globals. The prompts are files
-in `prompts/`. The point is that a change can be made and then measured: edit a value, run
-`python -m evals.run`, compare. README.md lists every variable.
+in `prompts/`. The point is that a change can be made and then measured rather than argued about.
+README.md lists every variable.
 
 ## Why this architecture
 
-A hand-written loop, not a framework. `agent.py` is 155 lines including the docstrings.
+A hand-written loop, not a framework. `agent.py` is 161 lines including the docstrings.
 
 The loop is the part of this exercise being judged. A framework would hide it, and would make the
 budgets, the retry policy and the forced final answer harder to control and harder to explain. With
@@ -48,6 +49,44 @@ The principle running through the rest of this document: **the model interprets,
 model reads the request and weighs the evidence. Anything with one correct answer — date
 arithmetic, argument validation, anomaly detection, confidence limits — is computed in code, where
 it can be unit tested.
+
+## Data: one event stream, everything else derived
+
+The input is a log file. The agent needs metrics, deployments and dependencies too, and there are
+only two ways to get them: invent them alongside the events, or compute them from the events. Only
+the second is honest, so ingest does the second.
+
+```
+logs.jsonl  ->  parse and normalise  ->  event rows  ->  derive  ->  metric_point
+                skip + report bad lines                            deployment
+                                                                   dependency, service
+```
+
+| Derived | Rule |
+|---|---|
+| `request_rate` | events per service per minute |
+| `error_rate` | `ERROR`/`FATAL`/`CRITICAL` divided by total, per service per minute |
+| `latency_p95_ms` | 95th percentile of `latency_ms` per service per minute, where the field is present |
+| deployments | events carrying `event_type: "deployment"` and a version |
+| dependencies | distinct `service -> target` pairs |
+
+Two decisions worth stating.
+
+**The derivations are computed at ingest, not on read.** It costs some duplicated storage and buys
+two things: every metric definition lives in one readable, unit-tested place instead of inside a
+tool's SQL, and the query path stays a single indexed `SELECT`.
+
+**This is what stops the agent fabricating evidence.** An earlier version generated metrics
+procedurally from fixtures, and quietly produced a plausible flat series for any metric a service
+had never emitted. The agent read one, reported *"orders-db showed no error-rate spike"* as an
+observed fact, cited it, and stopped looking at the service that was actually failing. Deriving
+from events removes the possibility rather than guarding against it: no rows means the tool returns
+nothing, which routes into the `empty` wording the agent already handles correctly.
+
+SQLite, because it is one file with no setup and handles this volume without thinking about it.
+Raw `sqlite3` rather than an ORM; six tables do not justify one. One dataset at a time, and
+uploading replaces it — a dataset picker would be a mode, and modes are what this design keeps
+removing.
 
 ## The agent loop
 
@@ -140,8 +179,7 @@ Nothing in the code picks tools. The model does, from three inputs:
 Different questions therefore produce different traces. "What does checkout-api depend on?" is one
 lookup. "Why did payment-service latency rise?" needs metrics, then dependencies, then metrics on
 the upstream service — and the third call's arguments only exist because of the second call's
-result. Evaluation scenarios 1, 8 and 9 check exactly this, and scenario 8 asserts the chaining
-directly: at least one call must use a value it could only have learnt from an earlier result.
+result — a call whose arguments could only have come from an earlier call's result.
 
 ## Preventing loops and runaway cost
 
@@ -199,7 +237,7 @@ model can reason about rather than an exception that ends the run:
 | Contradictory evidence | Both observations are kept and can be cited, as supporting and contradicting. Confidence is capped and a next check is recommended. |
 | Repeated call | Not run again; the earlier observation is returned. |
 
-**`empty` is a fact about the query, not about the world.** `get_deployments` returning nothing does
+**`empty` is a fact about the query, not about the system.** `get_deployments` returning nothing does
 not prove no deployment happened — the window may be wrong, the service may be wrong, or the data
 may be incomplete. The summary says so in those words, every time:
 
@@ -270,14 +308,14 @@ outage". A bounded grammar refuses instead, with a reason, and the agent asks th
 `NOW` comes from `AGENT_NOW`: a fixed timestamp, or `auto` for the system clock. It is always
 injected, never read from the clock directly, so a test or an evaluation can pin it.
 
-The mock data follows it. Each world declares an `anchor_date`, and on load its fixtures are moved
-by whole days so that the incident day is the day before `NOW`. Clock times within the day do not
-move: the deployment stays at 14:32 and the spike still starts at 14:37. Without this, `auto` would
-be useless — "yesterday" would land on a day with no fixture data and every investigation would
-come back empty.
+`data` is the default because it makes the agent's clock follow the evidence: whatever period the
+uploaded file covers, "this afternoon" refers to data that exists. A fixed timestamp is for when a
+run has to be repeatable.
 
-The generated noise on a metric is keyed on the unshifted timestamp, so a rebased world produces
-the same numbers as a pinned one. A run today and a run next week are comparable.
+A time expression with no date resolves to the most recent occurrence that has already **started**,
+clipped to `now`, with both the assumed date and the clip reported as assumptions. Requiring it to
+have finished would send "this afternoon" to yesterday whenever the data ends mid-afternoon, which
+is exactly when someone is investigating.
 
 ## Conversation state
 
@@ -294,7 +332,7 @@ arguments of earlier tool calls, which are in the history. A second copy would b
 keep correct.
 
 Budgets reset each turn. The ledger and the de-duplication hashes persist, which is correct here
-because the mock data is static.
+because the dataset does not change underneath a conversation.
 
 ## The final response
 
@@ -358,7 +396,7 @@ The design does not claim enforcement that code does not provide.
 | A failed call cannot be cited | Code (`finalize`) |
 | Every observed fact cites an observation | Code (schema and `finalize`) |
 | A failed call must appear in `gaps` or `missing_evidence` | Code (`finalize`) |
-| An empty result is worded as a query result, not proof of absence | Code (summary wording); the model's own phrasing: prompt + scenario 5 |
+| An empty result is worded as a query result, not proof of absence | Code (summary wording); the model's own phrasing is the prompt's job |
 | An empty result cannot raise confidence | Code |
 | Confidence downgrades are visible | Code |
 | A forced final answer says it was stopped early | Code |
@@ -369,17 +407,17 @@ The design does not claim enforcement that code does not provide.
 | No tool can change production | Code (no such tool exists) |
 | A citation actually supports the statement it is attached to | **Not enforced** — see Limitations |
 | Contradicting evidence is reported at all | Prompt; the cap applies only to what the model volunteers |
-| Timing alone is correlation, not causation | Prompt; scenario 3 |
-| A note is only filed for an investigation that reached a finding | Prompt; scenarios 2, 4, 9, 10 |
-| `resolve_time_range` is used for worded or date-less expressions | Prompt; scenarios 1 and 11 |
+| Timing alone is correlation, not causation | Prompt |
+| A note is only filed for an investigation that reached a finding | Prompt |
+| `resolve_time_range` is used for worded or date-less expressions | Prompt |
 
 ## Actions and dangerous operations
 
 `create_incident_note` runs automatically, as the brief allows. It is called during the loop, before
 the final answer exists, so code cannot judge whether it is warranted. Enforcement is split
 honestly: code checks the structure (citations valid, fields bounded, one per turn), the prompt
-carries the judgement, and the scenarios verify it — zero notes for a healthy service, a clarifying
-question, a dependency lookup, or a rollback request.
+carries the judgement. Verifying the judgement is what the evaluation suite is for, and that is the
+piece still to be built.
 
 **There is no tool that changes production.** Asked to roll back, the agent does not act; it explains
 that a human must carry it out or approve it, and may recommend it. This is a scope decision, not an
@@ -399,17 +437,25 @@ user confirms that exact service and version — is the first thing to add next.
    The summary asks for a wider window whenever it can tell, but it cannot always tell.
 3. **Spike detection finds increases only.** Traffic falling to zero is a real incident signature and
    is not detected.
-4. **The contradiction cap depends on the model reporting the contradiction.** Code cannot detect
+4. **`error_rate` is only as precise as the log volume.** It is errors over events in a one-minute
+   bucket, so for a service logging five events a minute one error reads as 20%. On low-volume
+   services the rate is noisy and a single error can cross the threshold.
+5. **The contradiction cap depends on the model reporting the contradiction.** Code cannot detect
    that two observations conflict in meaning.
-5. **Code cannot force the use of `resolve_time_range`.** The model can pass timestamps it worked out
-   itself. The validator still bounds them, and the scenarios check the behaviour.
-6. **Sessions are in memory.** Restarting the server loses them.
+6. **Code cannot force the use of `resolve_time_range`.** The model can pass timestamps it worked out
+   itself. The validator still bounds them.
+7. **Sessions are in memory.** The dataset is persistent; conversations are not, and restarting the
+   server loses them.
+8. **The evaluation suite does not exist yet.** The previous one was written against mock fixtures
+   that this design deleted, so it was removed rather than left pointing at data that had gone. It
+   is being rebuilt against an ingested dataset.
 
 ## What would change for production scale
 
-- **Real backends** behind the same tool interface — the executor, the envelope and the summaries do
-  not change. Per-tool timeouts and circuit breakers, since a real logging API is slower and less
-  reliable than a dict lookup.
+- **Real backends** behind the same `Store` interface — the executor, the envelope and the summaries
+  do not change. Per-tool timeouts and circuit breakers, since a real logging API is slower and less
+  reliable than a local query, and streaming ingest straight to disk rather than reading the upload
+  into memory.
 - **Persistent sessions** in a database, and compaction of old tool results down to their summaries
   once a conversation outgrows the context window.
 - **Cost controls per tenant**, not just per turn, with the token usage already returned by the

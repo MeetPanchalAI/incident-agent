@@ -6,13 +6,14 @@ import time
 
 from incident_agent.config import Budgets, Settings
 from incident_agent.tools.executor import Batch, Budget, ToolExecutor
-from incident_agent.tools.mock_backend import MockBackend
+from incident_agent.tools.store import Store
 from tests.conftest import WINDOW, call
 
 
-def _executor(settings, world="incident", faults=None, **budget_overrides):
-    tuned = Settings(now=settings.now, budgets=Budgets(**budget_overrides)) if budget_overrides else settings
-    return ToolExecutor(tuned, MockBackend(world, faults))
+def _executor(settings, faults=None, **budget_overrides):
+    tuned = (Settings(now=settings.now, db_path=settings.db_path, budgets=Budgets(**budget_overrides))
+             if budget_overrides else settings)
+    return ToolExecutor(tuned, Store(settings.db_path, faults))
 
 
 # -- failures --------------------------------------------------------------
@@ -35,7 +36,7 @@ def test_a_transient_failure_succeeds_on_the_retry(settings, session):
 
 def test_a_slow_backend_hits_the_real_timeout(settings, session, monkeypatch):
     executor = _executor(settings, tool_timeout_s=0.05, tool_retries=0)
-    monkeypatch.setattr(executor.backend, "get_deployments", lambda *a: time.sleep(5))
+    monkeypatch.setattr(executor.store, "get_deployments", lambda *a: time.sleep(5))
     observation = call(executor, session, "get_deployments", {"service": "checkout-api", **WINDOW})
     assert observation.status == "timeout"
 
@@ -126,12 +127,12 @@ def test_calls_past_the_budget_are_refused_not_executed(settings, session):
 
 def test_unproductive_results_lead_to_stuck(executor, session, budget):
     for _ in range(3):
-        call(executor, session, "get_deployments", {"service": "nope", **WINDOW}, budget=budget)
+        call(executor, session, "get_deployments", {"service": "not-a-service", **WINDOW}, budget=budget)
     assert budget.stuck() is True
 
 
 def test_a_productive_result_clears_the_stuck_counter(executor, session, budget):
-    call(executor, session, "get_deployments", {"service": "nope", **WINDOW}, budget=budget)
+    call(executor, session, "get_deployments", {"service": "not-a-service", **WINDOW}, budget=budget)
     call(executor, session, "get_service_dependencies", {"service": "checkout-api"}, budget=budget)
     assert budget.unproductive_streak == 0
 

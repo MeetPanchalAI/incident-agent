@@ -7,3 +7,5 @@ dist/
 venv/
 .env
 .pytest_cache/
+data/
+sample_logs.jsonl

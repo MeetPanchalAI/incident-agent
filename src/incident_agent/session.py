@@ -58,7 +58,6 @@ def call_hash(tool: str, args: dict) -> str:
 @dataclass
 class Session:
     id: str = field(default_factory=lambda: uuid4().hex[:12])
-    world: str = "incident"
     messages: list[dict] = field(default_factory=list)
     observations: list[Observation] = field(default_factory=list)
     turn: int = 0

@@ -16,10 +16,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DEFAULT_NOW = "2026-09-23T10:00:00Z"
 DEFAULT_MODEL = "gpt-5.6-luna"
-DEFAULT_WORLD = "incident"
-PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+ROOT = Path(__file__).resolve().parents[2]
+PROMPTS_DIR = ROOT / "prompts"
+DEFAULT_DB = ROOT / "data" / "incident.db"
 
 
 def parse_iso(value: str) -> datetime:
@@ -62,11 +62,6 @@ class Budgets:
     tool_retries: int = 1
     repair_attempts: int = 1
 
-    @property
-    def max_llm_calls(self) -> int:
-        """Hard cost bound per turn: the loop steps plus one forced final call."""
-        return self.max_llm_steps + 1
-
     @classmethod
     def from_env(cls) -> Budgets:
         return cls(
@@ -96,12 +91,14 @@ class Detection:
 
 @dataclass(frozen=True)
 class Settings:
-    now: datetime
+    #: The agent's current time. None means "the last event in the dataset",
+    #: which `build_service` fills in once the store is open.
+    now: datetime | None = None
     model: str = DEFAULT_MODEL
     temperature: float = 1.0
     reasoning_effort: str | None = None
-    world: str = DEFAULT_WORLD
     api_key: str | None = None
+    db_path: Path = DEFAULT_DB
     prompts_dir: Path = PROMPTS_DIR
     max_rows: int = 20
     max_window_days: int = 7
@@ -109,24 +106,21 @@ class Settings:
     detection: Detection = field(default_factory=Detection)
 
 
-def resolve_now(value: str) -> datetime:
-    """`auto` means the system clock. Anything else is a fixed ISO timestamp.
-
-    Pinning it keeps evaluation runs reproducible. The mock worlds follow it
-    either way: their incident day is rebased onto the day before `now`.
-    """
-    return datetime.now(timezone.utc) if value.lower() == "auto" else parse_iso(value)
+def resolve_now(value: str) -> datetime | None:
+    """`data` means the last event in the dataset. Anything else is a fixed
+    ISO timestamp, which is what keeps an evaluation run reproducible."""
+    return None if value.strip().lower() in ("", "data") else parse_iso(value)
 
 
 def load_settings() -> Settings:
     """Build settings from the environment."""
     return Settings(
-        now=resolve_now(_env("AGENT_NOW", DEFAULT_NOW)),
+        now=resolve_now(os.getenv("AGENT_NOW", "data")),
         model=_env("AGENT_MODEL", DEFAULT_MODEL),
         temperature=_float("AGENT_TEMPERATURE", 1.0),
         reasoning_effort=os.getenv("AGENT_REASONING_EFFORT", "").strip() or None,
-        world=_env("AGENT_WORLD", DEFAULT_WORLD),
         api_key=os.getenv("OPENAI_API_KEY"),
+        db_path=Path(_env("AGENT_DB_PATH", str(DEFAULT_DB))),
         prompts_dir=Path(_env("AGENT_PROMPTS_DIR", str(PROMPTS_DIR))),
         max_rows=_int("AGENT_MAX_ROWS", 20),
         max_window_days=_int("AGENT_MAX_WINDOW_DAYS", 7),

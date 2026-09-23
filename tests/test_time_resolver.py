@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from incident_agent.config import format_iso
+from incident_agent.config import format_iso, parse_iso
 from incident_agent.tools.time_resolver import TimeResolutionError, resolve, validate_range
-from tests.conftest import NOW
+
+# This module tests the grammar itself, so it fixes its own clock.
+NOW = parse_iso("2026-09-23T10:00:00Z")
 
 
 @pytest.mark.parametrize(
@@ -32,7 +34,7 @@ def test_supported_expressions(expression, start, end):
 
 
 @pytest.mark.parametrize("expression", ["2 PM to 4 PM", "14:00-16:00", "afternoon"])
-def test_missing_date_uses_most_recent_completed_occurrence_and_says_so(expression):
+def test_a_missing_date_uses_the_most_recent_occurrence_and_says_so(expression):
     resolved = resolve(expression, NOW)
     assert resolved.start.date().isoformat() == "2026-09-22"
     assert any("2026-09-22" in a for a in resolved.assumptions)
@@ -75,3 +77,11 @@ def test_validate_range_rejects_reversed_future_and_oversized_windows():
     assert validate_range(end, start, NOW, 7)  # reversed
     assert validate_range(start, NOW.replace(day=30), NOW, 7)  # in the future
     assert validate_range(start.replace(month=8, day=1), end, NOW, 7)  # too long
+
+
+def test_a_range_that_has_started_but_not_finished_is_clipped_to_now():
+    """With "now" inside the window, today's occurrence is used, not yesterday's."""
+    now = parse_iso("2026-09-22T15:30:00Z")
+    resolved = resolve("2 PM to 4 PM", now)
+    assert (format_iso(resolved.start), format_iso(resolved.end)) == ("2026-09-22T14:00:00Z", "2026-09-22T15:30:00Z")
+    assert any("clipped" in a for a in resolved.assumptions)

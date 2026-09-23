@@ -12,7 +12,7 @@ import statistics
 from datetime import datetime
 
 from ..config import Detection, format_iso
-from .mock_backend import catalog
+from .store import METRICS
 from .schemas import Dependencies, Deployment, LogEvent, MetricPoint
 
 
@@ -29,7 +29,7 @@ def _sample(rows: list, limit: int) -> list:
 
 
 def _fmt(value: float, metric: str) -> str:
-    if catalog()["metrics"][metric]["unit"] == "fraction":
+    if METRICS[metric]["unit"] == "fraction":
         return f"{value:.4f} ({value * 100:.2f}%)"
     return f"{value:g}"
 
@@ -55,7 +55,7 @@ def summarize_metrics(
         return (f"{head}; insufficient metric data for spike detection "
                 f"(at least {detection.min_metric_points} needed).{truncated}"), rows
 
-    min_delta = catalog()["metrics"][metric]["min_delta"]
+    min_delta = METRICS[metric]["min_delta"]
     baseline = statistics.median(values)
     threshold = max(detection.spike_multiplier * baseline, baseline + min_delta)
     body = f"; baseline (median) {_fmt(baseline, metric)}; threshold {_fmt(threshold, metric)}"

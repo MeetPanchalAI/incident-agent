@@ -1,7 +1,8 @@
 """Command-line interface.
 
-    python -m incident_agent.cli                 interactive
-    python -m incident_agent.cli "question"      one question and exit
+    python -m incident_agent.cli                     interactive
+    python -m incident_agent.cli "question"          one question and exit
+    python -m incident_agent.cli --ingest logs.jsonl load a dataset and exit
 """
 
 from __future__ import annotations
@@ -9,13 +10,16 @@ from __future__ import annotations
 import sys
 
 from . import build_service, load_settings
+from .agent import describe_dataset
 from .report import render_text
-from .tools.mock_backend import available_worlds
+from .tools.ingest import IngestError, ingest_file
+from .tools.store import Store
 
 HELP = """Commands:
-  /world <name>   switch the mock world and start a new session ({worlds})
+  /ingest <path>  replace the dataset with a JSONL log file
+  /data           show the loaded dataset
   /trace          show the tool calls from the last turn
-  /reset          start a new session in the same world
+  /reset          start a new session
   /help           show this
   /quit           exit"""
 
@@ -30,11 +34,43 @@ def _print_trace(trace: list[dict]) -> None:
         print(f"  {row['observation_id']}  {row['status']:<17}{attempts} {row['tool']}({args})")
 
 
+def _load(path: str, db_path) -> bool:
+    try:
+        report = ingest_file(path, db_path)
+    except (IngestError, OSError) as error:
+        print(error)
+        return False
+    print(f"Ingested {report.events} events from {report.filename}"
+          + (f", skipped {report.skipped}" if report.skipped else "") + ".")
+    print(f"  {report.first_ts} to {report.last_ts}")
+    print(f"  services: {', '.join(report.services)}")
+    print(f"  metrics: {', '.join(report.metrics)} | deployments: {report.deployments}"
+          f" | dependency edges: {report.dependencies}")
+    for problem in report.problems[:3]:
+        print(f"  skipped: {problem}")
+    return True
+
+
 def main(argv: list[str]) -> int:
     settings = load_settings()
-    world = settings.world
+
+    if argv and argv[0] == "--ingest":
+        if len(argv) < 2:
+            print("Usage: python -m incident_agent.cli --ingest <path>")
+            return 2
+        return 0 if _load(argv[1], settings.db_path) else 1
+
+    store = Store(settings.db_path)
+    empty = store.is_empty()
+    summary = describe_dataset(store)
+    store.close()
+    if empty:
+        print("No data has been ingested yet. Load a log file first:")
+        print("  python -m incident_agent.cli --ingest <path.jsonl>")
+        return 1
+
     try:
-        service = build_service(settings, world=world)
+        service = build_service(settings)
     except (RuntimeError, ValueError) as error:
         print(error)
         return 1
@@ -42,11 +78,11 @@ def main(argv: list[str]) -> int:
     last_trace: list[dict] = []
 
     if argv:
-        result = service.run_turn(session, " ".join(argv))
-        print(render_text(result.outcome))
+        print(render_text(service.run_turn(session, " ".join(argv)).outcome))
         return 0
 
-    print(f"Incident agent. World: {world}. Now: {settings.now:%Y-%m-%d %H:%M}Z. Type /help for commands.")
+    print(f"Incident agent. Dataset: {summary}.")
+    print(f"Current time: {service.settings.now:%Y-%m-%d %H:%M}Z. Type /help for commands.")
     while True:
         try:
             line = input("\n> ").strip()
@@ -57,24 +93,22 @@ def main(argv: list[str]) -> int:
         if line in ("/quit", "/exit"):
             return 0
         if line == "/help":
-            print(HELP.format(worlds=", ".join(available_worlds())))
+            print(HELP)
+            continue
+        if line == "/data":
+            print(describe_dataset(service.store))
             continue
         if line == "/trace":
             _print_trace(last_trace)
             continue
         if line == "/reset":
             session = service.new_session()
-            print(f"New session in world '{world}'.")
+            print("New session.")
             continue
-        if line.startswith("/world "):
-            name = line.split(maxsplit=1)[1].strip()
-            if name not in available_worlds():
-                print(f"Unknown world. Available: {', '.join(available_worlds())}")
-                continue
-            world = name
-            service = build_service(settings, world=world)
-            session = service.new_session()
-            print(f"New session in world '{world}'.")
+        if line.startswith("/ingest "):
+            if _load(line.split(maxsplit=1)[1].strip(), settings.db_path):
+                service = build_service(settings)
+                session = service.new_session()
             continue
 
         result = service.run_turn(session, line)
@@ -82,7 +116,6 @@ def main(argv: list[str]) -> int:
         print()
         print(render_text(result.outcome))
         print(f"\n[{len(result.trace)} tool calls, {result.llm_calls} model calls, {result.steps} steps]")
-    return 0
 
 
 if __name__ == "__main__":

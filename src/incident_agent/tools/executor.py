@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from ..config import Budgets, Settings
 from ..session import Observation, Session, call_hash
 from . import summaries
-from .mock_backend import MalformedResponse, MockBackend, TransientError
+from .store import MalformedResponse, Store, TransientError
 from .schemas import (
     CATEGORY_BY_NAME,
     TOOLS_BY_NAME,
@@ -77,9 +77,9 @@ class Batch:
 
 
 class ToolExecutor:
-    def __init__(self, settings: Settings, backend: MockBackend) -> None:
+    def __init__(self, settings: Settings, store: Store) -> None:
         self.settings = settings
-        self.backend = backend
+        self.store = store
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tool")
 
     # -- pipeline ----------------------------------------------------------
@@ -112,6 +112,8 @@ class ToolExecutor:
             return self._record(session, call, {}, "invalid_arguments", f"Invalid arguments. {detail}")
 
         args = args_model.model_dump(mode="json")
+        if unknown := self._unknown_service(args_model):
+            return self._record(session, call, args, "invalid_arguments", unknown)
         if errors := self._range_errors(args_model):
             return self._record(session, call, args, "invalid_arguments", "Invalid time range. " + " ".join(errors))
 
@@ -133,6 +135,18 @@ class ToolExecutor:
 
         # 5-7. execute, then validate and classify the result
         return self._execute(call, args_model, args, session)
+
+    def _unknown_service(self, args_model) -> str | None:
+        """Which services exist depends on the dataset, so this is checked here."""
+        service = getattr(args_model, "service", None)
+        if service is None:
+            return None
+        known = self.store.services()
+        if service in known:
+            return None
+        if not known:
+            return "No dataset has been ingested yet, so there are no services to query."
+        return f"Unknown service '{service}'. Services in this dataset: {', '.join(known)}."
 
     def _range_errors(self, args_model) -> list[str]:
         start, end = getattr(args_model, "start_time", None), getattr(args_model, "end_time", None)
@@ -208,13 +222,13 @@ class ToolExecutor:
             return f"NOTE-{sum(1 for o in session.observations if o.tool == name and o.status == 'ok') + 1:03d}"
 
         calls = {
-            "get_metrics": lambda: self.backend.get_metrics(
+            "get_metrics": lambda: self.store.get_metrics(
                 args_model.service, args_model.metric, args_model.start_time, args_model.end_time),
-            "search_logs": lambda: self.backend.search_logs(
+            "search_logs": lambda: self.store.search_logs(
                 args_model.service, args_model.start_time, args_model.end_time, args_model.query),
-            "get_deployments": lambda: self.backend.get_deployments(
+            "get_deployments": lambda: self.store.get_deployments(
                 args_model.service, args_model.start_time, args_model.end_time),
-            "get_service_dependencies": lambda: self.backend.get_service_dependencies(args_model.service),
+            "get_service_dependencies": lambda: self.store.get_service_dependencies(args_model.service),
         }
         return self._pool.submit(calls[name]).result(timeout=self.settings.budgets.tool_timeout_s)
 

@@ -101,9 +101,14 @@ def _span_for_remainder(remainder: str) -> tuple[timedelta, timedelta] | None:
     return _parse_clock_range(remainder)
 
 
-def _most_recent_completed(span: tuple[timedelta, timedelta], now: datetime) -> tuple[datetime, datetime, str]:
+def _most_recent(span: tuple[timedelta, timedelta], now: datetime) -> tuple[datetime, datetime, str]:
+    """The most recent occurrence that has already started.
+
+    Today's if it has begun, otherwise yesterday's. A range that has begun but
+    not finished is clipped to `now` by resolve(), which records the clip.
+    """
     day = now.date()
-    if _day_start(day) + span[1] > now:
+    if _day_start(day) + span[0] >= now:
         day -= timedelta(days=1)
     return _day_start(day) + span[0], _day_start(day) + span[1], day.isoformat()
 
@@ -174,8 +179,8 @@ def _resolve_calendar(text: str, now: datetime, assumptions: list[str]) -> tuple
         )
 
     if day is None:
-        start, end, assumed = _most_recent_completed(span, now)
-        assumptions.append(f"Date not given; assumed {assumed}, the most recent completed occurrence.")
+        start, end, assumed = _most_recent(span, now)
+        assumptions.append(f"Date not given; assumed {assumed}, the most recent occurrence.")
         return start, end
     return _day_start(day) + span[0], _day_start(day) + span[1]
 

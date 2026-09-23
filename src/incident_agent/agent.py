@@ -21,8 +21,16 @@ from .prompts import Prompts
 from .report import FinalOutcome, build_from_ledger, finalize, finalize_unverified, submit_response_schema
 from .session import Session
 from .tools.executor import Batch, Budget, ToolCall, ToolExecutor
-from .tools.mock_backend import MockBackend
+from .tools.store import Store
 from .tools.schemas import TOOL_SPECS
+
+
+def describe_dataset(store: Store) -> str:
+    info = store.info()
+    if not info:
+        return "none ingested yet, so no tool can return anything"
+    return (f"{info['filename']}, {info['event_count']} events "
+            f"from {info['first_ts']} to {info['last_ts']}")
 
 
 @dataclass
@@ -44,16 +52,16 @@ class TurnResult:
 
 
 class AgentService:
-    def __init__(self, settings: Settings, llm: LLMClient, backend: MockBackend) -> None:
+    def __init__(self, settings: Settings, llm: LLMClient, store: Store) -> None:
         self.settings = settings
         self.llm = llm
-        self.backend = backend
-        self.prompts = Prompts(settings)
-        self.executor = ToolExecutor(settings, backend)
+        self.store = store
+        self.prompts = Prompts(settings, store.services(), describe_dataset(store))
+        self.executor = ToolExecutor(settings, store)
         self.tools = [spec.openai_schema() for spec in TOOL_SPECS] + [submit_response_schema()]
 
     def new_session(self) -> Session:
-        session = Session(world=self.backend.world_name)
+        session = Session()
         session.messages.append({"role": "system", "content": self.prompts.system})
         return session
 

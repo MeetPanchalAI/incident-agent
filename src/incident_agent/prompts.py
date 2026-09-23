@@ -14,7 +14,7 @@ from pathlib import Path
 from string import Template
 
 from .config import Settings, format_iso
-from .tools.mock_backend import known_metrics, known_services
+from .tools.store import METRICS
 
 FILES = ("system", "submit_not_alone", "submit_invalid", "force_final", "stopped_early")
 
@@ -32,12 +32,13 @@ def load(directory: Path, name: str) -> str:
 class Prompts:
     """The prompt text for one agent, read once at construction."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, services: list[str], dataset: str) -> None:
         self.directory = settings.prompts_dir
         self.system = Template(load(self.directory, "system")).safe_substitute(
             now=format_iso(settings.now),
-            services=", ".join(known_services()),
-            metrics=", ".join(known_metrics()),
+            services=", ".join(services) or "none - no data has been ingested yet",
+            metrics=", ".join(sorted(METRICS)),
+            dataset=dataset,
         )
         self.submit_not_alone = load(self.directory, "submit_not_alone")
         self.force_final = load(self.directory, "force_final")

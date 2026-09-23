@@ -24,7 +24,12 @@
     display: flex; gap: 12px; align-items: center; padding: 12px 20px;
     border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg);
   }
-  header h1 { font-size: 15px; margin: 0; font-weight: 600; flex: 1; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .chip {
+    flex: 1; font-size: 12px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  button[disabled] { opacity: .5; cursor: not-allowed; }
   select, button {
     font: inherit; font-size: 14px; padding: 6px 10px; border-radius: 6px;
     border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer;
@@ -80,7 +85,9 @@
 <body>
 <header>
   <h1>Incident Agent</h1>
-  <select id="world" title="Mock world"></select>
+  <span class="chip" id="dataset">no data</span>
+  <input type="file" id="file" accept=".jsonl,.json,.log,.txt" hidden>
+  <button id="upload">Upload data</button>
   <button id="reset">New session</button>
 </header>
 
@@ -88,7 +95,7 @@
 
 <footer>
   <div class="composer">
-    <textarea id="input" rows="2" placeholder="Investigate checkout-api errors yesterday between 2 PM and 4 PM."></textarea>
+    <textarea id="input" rows="2" placeholder="Upload a log file first."></textarea>
     <button id="send">Send</button>
   </div>
 </footer>
@@ -97,7 +104,8 @@
 const log = document.getElementById('log');
 const input = document.getElementById('input');
 const send = document.getElementById('send');
-const worldSelect = document.getElementById('world');
+const datasetChip = document.getElementById('dataset');
+const fileInput = document.getElementById('file');
 let sessionId = null;
 
 const el = (tag, cls, text) => {
@@ -198,7 +206,7 @@ async function ask() {
   window.scrollTo(0, document.body.scrollHeight);
 
   try {
-    const data = await post('/api/chat', {message, session_id: sessionId, world: worldSelect.value});
+    const data = await post('/api/chat', {message, session_id: sessionId});
     sessionId = data.session_id;
     pending.remove();
     renderResponse(turn, data.response);
@@ -214,29 +222,69 @@ async function ask() {
 }
 
 async function reset() {
-  const data = await post('/api/reset', {world: worldSelect.value});
+  const data = await post('/api/reset', {});
   sessionId = data.session_id;
   log.replaceChildren();
   input.focus();
+}
+
+async function upload(file) {
+  const body = new FormData();
+  body.append('file', file);
+  const notice = el('div', 'meta', `Ingesting ${file.name}...`);
+  log.replaceChildren(notice);
+  send.disabled = true;
+  try {
+    const response = await fetch('/api/ingest', {method: 'POST', body});
+    const report = await response.json();
+    if (!response.ok) throw new Error(report.detail || response.statusText);
+    sessionId = null;
+    const lines = [
+      `${report.events} events from ${report.filename}` + (report.skipped ? `, ${report.skipped} skipped` : ''),
+      `${report.first_ts} to ${report.last_ts}`,
+      `services: ${report.services.join(', ')}`,
+      `metrics: ${report.metrics.join(', ')} | deployments: ${report.deployments} | dependency edges: ${report.dependencies}`,
+    ].concat(report.problems.slice(0, 3).map(p => `skipped: ${p}`));
+    log.replaceChildren();
+    lines.forEach(line => log.append(el('div', 'meta', line)));
+    await refresh();
+  } catch (error) {
+    log.replaceChildren(el('div', 'banner', 'Ingest failed: ' + error.message));
+  } finally {
+    input.focus();
+  }
+}
+
+async function refresh() {
+  const info = await (await fetch('/health')).json();
+  document.title = `Incident Agent · ${info.model}`;
+  const d = info.dataset;
+  datasetChip.textContent = d
+    ? `${d.filename} · ${d.event_count} events · ${d.first_ts.slice(0, 10)} to ${d.last_ts.slice(0, 10)} · ${info.services.length} services`
+    : 'no data ingested - upload a JSONL log file to begin';
+  send.disabled = !d;
+  input.placeholder = d
+    ? 'Investigate errors on a service, e.g. "why did checkout-api fail yesterday afternoon?"'
+    : 'Upload a log file first.';
+  if (!info.configured) {
+    log.append(el('div', 'banner',
+      'OPENAI_API_KEY is not set. Put your key on the OPENAI_API_KEY= line in .env and restart the server.'));
+  }
 }
 
 send.addEventListener('click', ask);
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
 });
-worldSelect.addEventListener('change', reset);
 document.getElementById('reset').addEventListener('click', reset);
 
-fetch('/health').then(r => r.json()).then(info => {
-  info.worlds.forEach(w => worldSelect.append(new Option(w, w)));
-  worldSelect.value = info.worlds.includes('incident') ? 'incident' : info.worlds[0];
-  document.title = `Incident Agent · ${info.model}`;
-  if (!info.configured) {
-    log.append(el('div', 'banner',
-      'OPENAI_API_KEY is not set. Put your key on the OPENAI_API_KEY= line in .env and restart the server.'));
-  }
-  input.focus();
+document.getElementById('upload').addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) upload(fileInput.files[0]);
+  fileInput.value = '';
 });
+
+refresh().then(() => input.focus());
 </script>
 </body>
 </html>
