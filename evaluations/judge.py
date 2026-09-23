@@ -74,6 +74,30 @@ def tool_coverage(scenario: dict, observations: list[dict]) -> dict:
     return {"required": len(specs), "covered": len(specs) - len(missing), "missing": missing}
 
 
+def used_a_prior_result(observations: list[dict]) -> bool:
+    """Did any call use a value it could only have learnt from an earlier one?
+
+    This is the multi-step requirement, and it cannot be checked by looking at
+    which tools ran: a service named only by a dependency lookup, or a window
+    narrowed inside one already queried, is the proof that a result changed the
+    next decision.
+    """
+    discovered: set[str] = set()
+    windows: list[tuple[str, str]] = []
+    for o in observations:
+        if o["category"] == "data":
+            if o["args"].get("service") in discovered:
+                return True
+            window = (o["args"].get("start_time"), o["args"].get("end_time"))
+            if all(window):
+                if any(p[0] <= window[0] and window[1] <= p[1] and p != window for p in windows):
+                    return True
+                windows.append(window)
+        if o["tool"] == "get_service_dependencies" and o["status"] == "ok":
+            discovered.update(str(o["summary"]).replace(",", " ").replace(".", " ").split())
+    return False
+
+
 def deterministic(scenario: dict, transcript: dict) -> dict:
     """Checks that are facts about the run, not opinions about the answer."""
     observations = transcript["observations"]
@@ -106,6 +130,8 @@ def deterministic(scenario: dict, transcript: dict) -> dict:
     if scenario["id"] == "E09":
         checks["malformed_not_cited"] = not any(
             o["status"] == "error" and o["observation_id"] in cited for o in observations)
+    if scenario["id"] == "E04":
+        checks["used_a_prior_result"] = used_a_prior_result(observations)
     if scenario["id"] == "E10" and len(transcript["turns"]) > 1:
         follow_up = transcript["turns"][-1]
         checks["follow_up_reused_state"] = len([t for t in follow_up["trace"]

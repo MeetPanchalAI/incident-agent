@@ -11,10 +11,9 @@ Browser (index.html) ─┐                        ┌─ CLI (cli.py)
               ┌────────────────────────────────┼────────────────────────────────┐
               ▼                                ▼                                ▼
       Session                          LLM client                       ToolExecutor
-      conversation, evidence ledger,   OpenAI Responses adapter,        budget → validate → dedupe
-      de-duplication hashes            scripted fake in tests           → policy → run with timeout
-                                                                        and retry → validate result
-                                                                        → summarise → observation
+      conversation,                    OpenAI Responses adapter,        budget → validate → dedupe
+      evidence ledger                  scripted fake in tests           → policy → run with timeout
+                                                                        and retry → validate → summarise
                                                                                      │
                                                                                      ▼
                                                                         Store (SQLite)
@@ -24,86 +23,64 @@ Browser (index.html) ─┐                        ┌─ CLI (cli.py)
 ```
 
 The CLI, the HTTP API and the tests all call the same `AgentService`. The API and the UI hold no
-logic of their own and cannot bypass any guardrail.
+logic of their own and cannot bypass a guardrail.
 
-**Nothing tunable is hard-coded.** The model, temperature and reasoning effort, every budget, the
-spike-detection thresholds, the result limits and the clock all come from `.env` through one
-`Settings` object that is threaded explicitly rather than read from globals. The prompts are files
-in `prompts/`. The point is that a change can be made and then measured rather than argued about.
-README.md lists every variable.
+**Nothing tunable is hard-coded.** Model, temperature, reasoning effort, every budget, the detection
+thresholds, the response limits and the clock come from `.env` through one `Settings` object threaded
+explicitly rather than read from globals. Prompts are files in `prompts/`. A change can therefore be
+made and measured rather than argued about.
 
 ## Why this architecture
 
-A hand-written loop, not a framework.
+A hand-written loop, not a framework. The loop is the part being judged; a framework would hide it
+and make the budgets, the retry policy and the forced final answer harder to control and to explain.
+With six tools and one control tool there is nothing left for a framework to manage.
 
-The loop is the part being judged. A framework would hide it, and would make the budgets, the retry
-policy and the forced final answer harder to control and harder to explain. With six tools and one
-control tool there is nothing for a framework to manage that the loop does not already manage.
+No planner/executor split, no multi-agent design. There is one investigation, one evidence ledger and
+one answer; both would add parts to explain and places for state to diverge.
 
-A planner/executor split or a multi-agent design was not used. Neither adds capability here: there
-is one investigation, one evidence ledger and one answer. Both would add parts to explain and
-places for state to diverge.
-
-The principle running through the rest of this document: **the model interprets, code decides.** The
-model reads the request and weighs the evidence. Anything with one correct answer — date
-arithmetic, argument validation, anomaly detection, confidence limits — is computed in code, where
-it can be unit tested.
+The principle running through everything below: **the model interprets, code decides.** The model
+reads the request and weighs evidence. Anything with one correct answer — date arithmetic, argument
+validation, anomaly detection, confidence limits — is computed in code, where it is unit tested.
 
 ## Data: one event stream, everything else derived
 
-The input is a log file. The agent needs metrics, deployments and dependencies too, and there are
-only two ways to get them: invent them alongside the events, or compute them from the events. Only
-the second is honest, so ingest does the second.
+The input is a log file. The agent also needs metrics, deployments and dependencies, and there are
+only two ways to get them: invent them alongside the events, or compute them from the events.
 
-```
-logs.jsonl  ->  parse and normalise  ->  event rows  ->  derive  ->  metric_point
-                skip + report bad lines                            deployment
-                                                                   dependency, service
-```
-
-| Derived | Rule |
+| Derived at ingest | Rule |
 |---|---|
 | `request_rate` | events per service per minute |
-| `error_rate` | `ERROR`/`FATAL`/`CRITICAL` divided by total, per service per minute |
-| `latency_p95_ms` | 95th percentile of `latency_ms` per service per minute, where the field is present |
+| `error_rate` | `ERROR`/`FATAL`/`CRITICAL` over total, per service per minute |
+| `latency_p95_ms` | 95th percentile of `latency_ms` per service per minute, where present |
 | deployments | events carrying `event_type: "deployment"` and a version |
-| dependencies | distinct `service -> target` pairs |
+| dependencies | distinct `service → target` pairs |
 
-Two decisions worth stating.
+Computed at ingest rather than on read, so every metric definition lives in one readable, tested
+place instead of inside a tool's SQL.
 
-**The derivations are computed at ingest, not on read.** It costs some duplicated storage and buys
-two things: every metric definition lives in one readable, unit-tested place instead of inside a
-tool's SQL, and the query path stays a single indexed `SELECT`.
+**This is what stops the agent fabricating evidence.** An earlier version generated metrics from
+fixtures and quietly produced a plausible flat series for any metric a service had never emitted. The
+agent reported *"orders-db showed no error-rate spike"* as an observed fact, cited it, and stopped
+looking at the service that was failing. Deriving from events removes the possibility rather than
+guarding against it: no rows means the tool returns nothing, which routes into the `empty` wording
+the agent already handles.
 
-**This is what stops the agent fabricating evidence.** An earlier version generated metrics
-procedurally from fixtures, and quietly produced a plausible flat series for any metric a service
-had never emitted. The agent read one, reported *"orders-db showed no error-rate spike"* as an
-observed fact, cited it, and stopped looking at the service that was actually failing. Deriving
-from events removes the possibility rather than guarding against it: no rows means the tool returns
-nothing, which routes into the `empty` wording the agent already handles correctly.
-
-SQLite, because it is one file with no setup and handles this volume without thinking about it.
-Raw `sqlite3` rather than an ORM; six tables do not justify one. One dataset at a time, and
-uploading replaces it — a dataset picker would be a mode, and modes are what this design keeps
-removing.
+SQLite: one file, no setup. Raw `sqlite3`, not an ORM. One dataset at a time — a dataset picker would
+be a mode, and modes are what this design keeps removing.
 
 ## The agent loop
 
-One pass per user message.
-
 ```python
 def run_turn(session, user_message):
-    session.start_turn(user_message)
     budget = Budget(...)                       # every limit comes from .env
     while budget.has_steps() and not budget.stuck():
         reply = llm.chat(session.messages, tools=ALL_TOOLS, tool_choice="required")
         budget.use_step()
-        session.messages.append(reply.message)
-        batch = Batch()
         for call in reply.tool_calls:
             if call.name == "submit_response":
                 outcome = finalize(call, session, budget, alone=len(reply.tool_calls) == 1)
-                reply_to(call, ...)            # every call gets a tool message
+                reply_to(call, ...)            # every call gets a result item
                 if outcome:
                     return outcome
             else:
@@ -111,116 +88,88 @@ def run_turn(session, user_message):
     return force_final(session)                # one last call, offering only submit_response
 ```
 
-`tool_choice="required"` means the model must call a tool at every step, so the only way to end a
-turn is `submit_response`. There is no free-text branch to parse and no ambiguity about whether the
-model meant to stop.
+`tool_choice="required"` means the model must call a tool at every step, so the only way to end a turn
+is `submit_response`. No free text to parse, no ambiguity about whether it meant to stop.
 
-Four rules make the loop safe:
+Four rules keep it safe:
 
-- **Every tool call gets a result item**, including rejected ones. The API refuses the next request
-  if any `call_id` is left unanswered, so a silently dropped call would break the conversation.
-- **`submit_response` must be alone in its step.** If it arrives alongside data tools, it is answered
-  with "review the other results first" and the loop continues. Answering before reading the results
-  you just asked for is not a conclusion.
-- **`submit_response` is never blocked by the tool-call budget.** Running out of budget must not cost
-  the user their answer.
-- **The turn always ends with an answer.** If the budget is spent or the loop is stuck,
-  `force_final` makes one more call offering only `submit_response`, and code adds a gap saying the
-  investigation was stopped early.
+- **Every tool call gets a result item**, including rejected ones. The API refuses the next request if
+  any `call_id` is unanswered.
+- **`submit_response` must be alone in its step.** Alongside data tools it is answered with "review the
+  other results first"; concluding before reading what you asked for is not a conclusion.
+- **`submit_response` is never blocked by the tool budget.** Running out must not cost the answer.
+- **The turn always ends with an answer.** If the budget is spent or the loop is stuck, `force_final`
+  makes one more call offering only `submit_response`, and code adds a gap saying so.
 
-**Parallel tool calls are enabled.** The model may ask for several tools in one step; they run in
-emission order. This is worth having because it saves model round trips — the expensive part — when
-calls are genuinely independent, such as metrics and deployments for a service and window already
-known. Dependent calls serialise on their own: the model cannot narrow a log search to 14:37 before
-metrics has told it 14:37, and cannot query `payment-gateway` before dependencies has named it.
-Running them concurrently in a thread pool was not done: the backend is in-process, so concurrency
-would save nothing measurable while making observation ordering non-deterministic.
+**Parallel tool calls are enabled**, run in emission order. It saves model round trips — the expensive
+part — when calls are independent. Dependent calls serialise on their own: the model cannot narrow a
+log search to 14:37 before metrics told it 14:37. Concurrent *execution* was not added: the store is
+in-process, so it would save nothing while making observation order non-deterministic.
 
-**Cost bound per turn: `AGENT_MAX_LLM_STEPS` plus one** — the loop steps plus the forced final call,
-so 11 at the default. A repair of an invalid final response happens inside the loop and costs a
-step, not an extra call.
+**Cost bound per turn: `AGENT_MAX_LLM_STEPS` plus one** (11 by default). A repair of an invalid final
+response happens inside the loop and costs a step, not an extra call.
 
-### Why the Responses API
-
-The adapter targets `/v1/responses`, not Chat Completions, because the model this agent runs on
-refuses the combination it needs:
-
-> Function tools with reasoning_effort are not supported for gpt-5.6-luna in
-> /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.
-
-Omitting the parameter fails the same way; the model reasons by default. The alternative was
-`reasoning_effort: none`, and it is a poor one here. `tool_choice` is `"required"`, so every reply
-is tool calls with no text content — reasoning is the only place this agent can deliberate between
-steps, and deciding what to check next from what the last call returned is the behaviour the whole
-design is about.
-
-The conversation is therefore a list of Responses items rather than chat messages: role messages,
-the model's own output items (its reasoning and its function calls), and one `function_call_output`
-per call. Nothing is stored server side (`store=False`), so the reasoning items travel in the
-conversation, which is why the client asks for `reasoning.encrypted_content`. Everything above the
-adapter — the executor, the ledger, the report validation, the guardrails — was unaffected by the
-change.
+**Why the Responses API.** `gpt-5.6-luna` rejects function tools combined with reasoning on Chat
+Completions, and rejects the request when `reasoning_effort` is omitted because it reasons by default.
+Only `reasoning_effort: none` works there — a poor trade, because `tool_choice` is `"required"`, so
+every reply is tool calls with no text content, and reasoning is the only place the agent can
+deliberate between steps. The conversation is therefore Responses items: role messages, the model's
+own output (reasoning and function calls), and one `function_call_output` per call. With
+`store=False` the reasoning items travel in the conversation, which is why the client requests
+`reasoning.encrypted_content`. Nothing above the adapter changed.
 
 ## How the agent chooses a tool
 
 Nothing in the code picks tools. The model does, from three inputs:
 
-1. **The tool schemas.** Each description says what the tool is for and when it is useful, not just
-   what it returns. `get_metrics` says it is usually the first step when asked why something went
-   wrong, because it establishes whether anything actually changed. `get_service_dependencies` says
-   to use it when a service looks affected but nothing local explains it.
-2. **The system prompt**, read from `prompts/system.md`. It describes good investigative practice
-   without prescribing a sequence:
-   use what you learn, narrow the window around a spike, follow dependencies upward, ask rather than
-   guess when the service or the window is unclear.
-3. **The observations so far**, which are in the message history, including from earlier turns.
+1. **The tool schemas.** Each description says when the tool is useful, not just what it returns.
+   `get_metrics` says it is usually the first step when asked why something went wrong;
+   `get_service_dependencies` says to use it when nothing local explains a problem.
+2. **The system prompt** (`prompts/system.md`), which describes good investigative practice without
+   prescribing a sequence.
+3. **The observations so far**, in the message history, including earlier turns.
 
-Different questions therefore produce different traces. "What does checkout-api depend on?" is one
-lookup. "Why did payment-service latency rise?" needs metrics, then dependencies, then metrics on
-the upstream service — and the third call's arguments only exist because of the second call's
-result — a call whose arguments could only have come from an earlier call's result.
+Different questions produce different traces. "What does checkout-api depend on?" is one lookup. "Why
+did payment-service latency rise?" needs metrics, then dependencies, then metrics on the upstream
+service — the third call's arguments exist only because of the second call's result. Evaluation
+scenario E04 asserts exactly that, deterministically.
 
 ## Preventing loops and runaway cost
 
-| Control | Variable | Default | What happens when it is hit |
+| Control | Variable | Default | On hit |
 |---|---|---|---|
 | Model steps per turn | `AGENT_MAX_LLM_STEPS` | 10 | `force_final` |
-| Tool calls per turn, including rejected ones | `AGENT_MAX_TOOL_CALLS` | 12 | Further calls return `budget_exceeded` |
+| Tool calls per turn, including rejected ones | `AGENT_MAX_TOOL_CALLS` | 12 | further calls return `budget_exceeded` |
 | Consecutive unproductive results | `AGENT_STUCK_THRESHOLD` | 3 | `force_final` |
-| Tool timeout / retries | `AGENT_TOOL_TIMEOUT_S` / `AGENT_TOOL_RETRIES` | 2 s / 1 | Retry once on timeout or a transient error, then report `timeout` |
-| Repairs of an invalid final response | `AGENT_REPAIR_ATTEMPTS` | 1 per turn | Return the response marked `unverified` |
-| Forced final call | — | 1 per turn | Allowed even when the step budget is spent |
+| Tool timeout / retries | `AGENT_TOOL_TIMEOUT_S` / `AGENT_TOOL_RETRIES` | 2 s / 1 | retry once, then report `timeout` |
+| Repairs of an invalid final response | `AGENT_REPAIR_ATTEMPTS` | 1 per turn | return it marked `unverified` |
+| Forced final call | — | 1 per turn | allowed even when the step budget is spent |
 
-An unproductive result is `invalid_arguments`, `duplicate` or `budget_exceeded` — the three
-outcomes that mean the model learnt nothing. Three in a row means it is not making progress, and
-the loop stops rather than spending the rest of the budget confirming that.
+An unproductive result is `invalid_arguments`, `duplicate` or `budget_exceeded` — the outcomes that
+taught the model nothing. Three in a row means no progress, and the loop stops rather than spending
+the rest of the budget confirming it.
 
-**De-duplication.** Before a call runs, its tool name and validated arguments are hashed. An exact
-repeat of a call that already succeeded returns `duplicate` with a pointer to the earlier
-observation instead of running again. Two details matter:
+**De-duplication.** A call's tool name and validated arguments are hashed; an exact repeat of a call
+that already succeeded returns `duplicate` pointing at the earlier observation. Two details:
 
-- **Only successful queries are remembered.** A call that timed out must stay retryable on a later
-  turn. Caching a failure would leave the agent unable either to retrieve the data or to cite it.
-- **Actions are excluded.** A second `create_incident_note` is refused by the note policy, which
-  gives a more useful message than "duplicate", and a note on a later turn is legitimate.
+- **Only successful queries are remembered.** Caching a failure would leave a timed-out call
+  permanently unrepeatable *and* permanently uncitable.
+- **Actions are excluded.** A second note is refused by the note policy, which says something more
+  useful, and a note on a later turn is legitimate.
 
-Within a single step, an identical repeat is caught regardless of status, because re-running a
-failing call twice in the same batch cannot help.
-
-De-duplication is exact match, not fuzzy. Shifting a window by a minute produces a new call. That
-is deliberate: narrowing a window around a spike is the behaviour the prompt asks for, and blocking
-it would be worse than the repetition it prevents. The step budget is the backstop.
+It is exact-match, not fuzzy. Shifting a window by a minute makes a new call — deliberately, since
+narrowing around a spike is the behaviour the prompt asks for. The step budget is the backstop.
 
 ## Handling poor or contradictory tool responses
 
-The executor never raises. Every call returns the same envelope, so a failure is information the
-model can reason about rather than an exception that ends the run:
+The executor never raises. Every call returns the same envelope, so a failure is information the model
+can reason about rather than an exception that ends the run:
 
 ```json
 {
   "observation_id": "obs_004",
   "status": "ok | empty | error | timeout | invalid_arguments | duplicate | budget_exceeded",
-  "summary": "error_rate on checkout-api, 2026-09-22T14:00:00Z to 2026-09-22T16:00:00Z: 120 points; baseline (median) 0.0094 (0.94%); threshold 0.0281 (2.81%); spike starts 2026-09-22T14:37:00Z; peak 0.1720 (17.20%) at 2026-09-22T14:41:00Z; 38 of 120 points above threshold. Showing 20 of 120 points.",
+  "summary": "error_rate on checkout-api ... baseline (median) 0.0094 (0.94%); spike starts 14:37 ...",
   "data": [],
   "error": null,
   "attempts": 1
@@ -230,175 +179,152 @@ model can reason about rather than an exception that ends the run:
 | Situation | Behaviour |
 |---|---|
 | Timeout or transient error | Retried once. If it still fails: recorded, not citable, and the model must report it in `gaps` or `missing_evidence`. |
-| Malformed response | The result is validated against a Pydantic model before the model sees it. A payload that does not match becomes `error: malformed_response`. Raw malformed data is never forwarded. |
+| Malformed response | Validated against a Pydantic model before the model sees it; a mismatch becomes `error: malformed_response`. Raw malformed data is never forwarded. |
 | Empty result | `status: empty`. Citable, because "the query returned nothing" is a fact. |
 | Invalid arguments | Not executed. The error names the valid services or metrics so the model can correct itself. |
-| Contradictory evidence | Both observations are kept and can be cited, as supporting and contradicting. Confidence is capped and a next check is recommended. |
+| Contradictory evidence | Both observations kept and citable, as supporting and contradicting. Confidence capped, a next check recommended. |
 | Repeated call | Not run again; the earlier observation is returned. |
 
 **`empty` is a fact about the query, not about the system.** `get_deployments` returning nothing does
-not prove no deployment happened — the window may be wrong, the service may be wrong, or the data
-may be incomplete. The summary says so in those words, every time:
+not prove no deployment happened — the window or the service may be wrong, or the data incomplete.
+The summary says so in those words every time:
 
 > get_deployments returned no matching records for checkout-api, 2026-09-22T14:00:00Z to
 > 2026-09-22T16:00:00Z. This is a result about the query, not proof that nothing happened.
 
-This is the failure mode most likely to produce a confident wrong answer, so the wording is
-generated by code rather than left to the model.
+This is the failure mode most likely to produce a confident wrong answer, so the wording is code, not
+left to the model.
 
-**Summaries are computed by code**, one function per tool, from the full result. Only the rows sent
-to the model are capped at 20, and the summary says when that happened ("Showing 20 of 120
-points"). Spike detection therefore has one correct answer, can be unit tested, and costs no extra
-model call.
+**Summaries are computed by code**, one function per tool, from the full result. Only the rows sent to
+the model are capped at 20, and the summary says when that happened. Spike detection therefore has one
+correct answer, is unit tested, and costs no extra model call.
 
-The metric rule:
-
-| Step | Rule |
+| Metric rule | |
 |---|---|
-| Minimum data | At least `AGENT_MIN_METRIC_POINTS` points (5), otherwise no spike claim is made. |
-| Baseline | Median of the window. |
-| Usable baseline | If the median is itself more than `AGENT_SPIKE_MULTIPLIER` times the quietest tenth of the window (or exceeds it by the minimum difference), the window is mostly elevated. The summary says the median is not a usable baseline, gives no spike start, and asks for a wider window. |
-| Spike | First point above `max(AGENT_SPIKE_MULTIPLIER × baseline, baseline + min_delta)`. Reports the baseline, the spike start, the peak and its time, and how many points are above the threshold. |
-| `min_delta` | `error_rate` 0.01 · `latency_p95_ms` 100 · `request_rate` 10. Stops a tiny baseline turning noise into a "3× spike". |
-| Scope | Increases only. |
+| Minimum data | at least `AGENT_MIN_METRIC_POINTS` (5), otherwise no spike claim |
+| Baseline | median of the window |
+| Usable baseline | if the median exceeds the quietest tenth by the spike threshold, the window is mostly elevated: no baseline, no spike start, ask for a wider window |
+| Spike | first point above `max(AGENT_SPIKE_MULTIPLIER × baseline, baseline + min_delta)` |
+| `min_delta` | `error_rate` 0.01 · `latency_p95_ms` 100 · `request_rate` 10, so a tiny baseline cannot turn noise into a "3× spike" |
+| Scope | increases only |
 
-The "usable baseline" step exists because the obvious version of this rule cannot fire. Counting how
-many points exceed the threshold can never exceed half the window, because the threshold is derived
-from the median of that same window: if most points are elevated, the median is elevated too, the
-threshold rises with it, and the summary reports "no spike detected" — which reads as an all-clear.
-Comparing the median against the quietest tenth detects it instead. This matters in practice,
-because narrowing a window around a spike is exactly what the prompt asks the agent to do.
+The "usable baseline" step exists because the obvious version of the rule *cannot fire*. Counting
+points above the threshold can never exceed half the window, because the threshold derives from the
+median of that same window: if most points are elevated the median rises with them, and the summary
+reports "no spike detected" — which reads as an all-clear. Comparing the median against the quietest
+tenth detects it instead. This matters, because narrowing a window around a spike is exactly what the
+prompt asks for.
 
-Tool output is treated as data, not instructions. The system prompt says so explicitly, because log
-messages are untrusted input.
+Tool output is treated as data, not instructions — log text is untrusted input, and the system prompt
+says so.
 
 ## Time
 
-The model identifies the time expression. Code resolves it and validates it.
+The model identifies the time expression; code resolves and validates it.
 
 ```
-User: "Investigate checkout-api errors yesterday between 2 PM and 4 PM"
-  → the model calls resolve_time_range("yesterday between 2 PM and 4 PM")
-  → code, with NOW = 2026-09-23T10:00:00Z, returns
-      {start: 2026-09-22T14:00:00Z, end: 2026-09-22T16:00:00Z, assumptions: []}
+"yesterday between 2 PM and 4 PM"
+  → resolve_time_range(...) → {start: 2026-09-22T14:00:00Z, end: ...T16:00:00Z, assumptions: []}
   → the model passes those timestamps to the data tools
   → the validator checks them again: start < end, end not after NOW, window at most 7 days
 ```
 
-The grammar is small, explicit and fully unit tested, all in UTC:
+The grammar is small, explicit and unit tested, all UTC: `today`/`yesterday`/`tomorrow`, an ISO date
+or a month-name date (`22 September`, `Sept 22`, optional year), optionally with `morning` 06–12,
+`afternoon` 12–18, `evening` 18–24 or `night` 00–06; `last N minutes/hours/days`; a clock range
+("2 PM to 4 PM"); or two ISO timestamps.
 
-- `today` / `yesterday` / `tomorrow`, an ISO date, or a date with a month name (`22 September`,
-  `Sept 22`, with an optional year), optionally with `morning` 06–12, `afternoon` 12–18,
-  `evening` 18–24 or `night` 00–06
-- `last N minutes / hours / days`
-- a clock range such as "2 PM to 4 PM" or "14:00–16:00", with or without a date
-- two ISO 8601 timestamps
+A general-purpose date parser was not used: it guesses silently on input like "during the outage". A
+bounded grammar refuses instead, with a reason, and the agent asks.
 
-A general-purpose date parser was not used, because it guesses silently on input like "during the
-outage". A bounded grammar refuses instead, with a reason, and the agent asks the user.
-
-- **A clock range or daypart with no date** resolves to the most recent occurrence that has already
-  ended. The assumed date is returned as an assumption, and code copies it into the report.
-- **Vague expressions** ("recently", "during the outage") return `unresolvable`; **future ranges**
-  return `future_range`. Either way the agent asks rather than investigating the wrong window.
-- **`today`** is clipped to the current time, and the clip is reported as an assumption.
-- **Narrowing a window** from timestamps seen in a result is allowed. That is copying an observed
+- **A date-less expression** resolves to the most recent occurrence that has already **started**,
+  clipped to now. Both the assumed date and the clip are returned as assumptions, and code copies them
+  into the report. Requiring it to have *finished* would send "this afternoon" to yesterday whenever
+  the data ends mid-afternoon — exactly when someone is investigating.
+- **Vague expressions** return `unresolvable`; **future ranges** return `future_range`.
+- **Narrowing a window** from a timestamp seen in a result is allowed: that is copying an observed
   value, not date arithmetic, and the validator still bounds it.
 
-`NOW` comes from `AGENT_NOW`: a fixed timestamp, or `auto` for the system clock. It is always
-injected, never read from the clock directly, so a test or an evaluation can pin it.
-
-`data` is the default because it makes the agent's clock follow the evidence: whatever period the
-uploaded file covers, "this afternoon" refers to data that exists. A fixed timestamp is for when a
-run has to be repeatable.
-
-A time expression with no date resolves to the most recent occurrence that has already **started**,
-clipped to `now`, with both the assumed date and the clip reported as assumptions. Requiring it to
-have finished would send "this afternoon" to yesterday whenever the data ends mid-afternoon, which
-is exactly when someone is investigating.
+`AGENT_NOW` is `data` (the last event in the dataset) or a fixed timestamp. `data` makes the clock
+follow the evidence, so "this afternoon" always refers to data that exists; a fixed timestamp is for
+when a run has to be repeatable. It is always injected, never read from the system clock.
 
 ## Conversation state
 
-One `Session` per conversation, held in memory, keyed by `session_id` for the API. It holds the full
-message history including every tool call and result, the evidence ledger, the de-duplication
-hashes, and the turn counter.
+One `Session` per conversation: the full message history including every tool call and result, the
+evidence ledger, the de-duplication hashes, the turn counter. It is written to the state database
+after each turn, so a conversation survives a server restart and can be replayed.
 
-Follow-ups work because the model can see the previous turn's observations. "Was there a deployment
+Follow-ups work because the model sees the previous turn's observations. "Was there a deployment
 around that time?" is answered from the existing `obs_` id with no new tool call, and the citation
 still validates because the ledger spans the conversation.
 
-The service and the time window are not extracted into separate state. They are already in the
-arguments of earlier tool calls, which are in the history. A second copy would be a second thing to
-keep correct.
+The service and time window are not extracted into separate state — they are already in the arguments
+of earlier calls. A second copy would be a second thing to keep correct.
 
-Budgets reset each turn. The ledger and the de-duplication hashes persist, which is correct here
-because the dataset does not change underneath a conversation.
+Budgets reset each turn; the ledger and hashes persist, which is right because the dataset does not
+change underneath a conversation.
 
 ## The final response
 
 ```
 response_type          "answer" | "clarification" | "investigation_report"
-message                the direct answer, or the clarifying question
-observed_facts         [{statement, evidence_ids}]         only things a tool returned
+message                the answer itself, leading with the conclusion
+observed_facts         [{statement, evidence_ids}]     only things a tool returned
 hypotheses             [{statement, supporting_evidence_ids, contradicting_evidence_ids,
                          missing_evidence, confidence}]
 likely_cause           null when the evidence is inconclusive
 recommended_actions    []
-gaps                   failed tool calls, missing data, contradictions
+gaps                   failed calls, missing data, contradictions
 assumptions            e.g. "Date not given; assumed 2026-09-22"
 ```
 
 `finalize()` checks four things:
 
-1. The payload matches the schema. Every observed fact must cite at least one observation.
-2. Every cited id exists and has status `ok` or `empty`. A failed call cannot be used as evidence.
+1. The payload matches the schema, and every observed fact cites at least one observation.
+2. Every cited id exists with status `ok` or `empty`. A failed call cannot be evidence.
 3. Every call that failed this turn is named in `gaps` or in a hypothesis's `missing_evidence`.
 4. The confidence limits below.
 
-If any check fails, the specific errors go back to the model for **one** repair attempt. If the
-repair also fails, the response is returned marked `unverified` with the invalid citations removed.
-If the payload cannot be parsed at all, code builds the response from the ledger — the summaries of
-successful observations as facts, the failures as gaps, no hypotheses. The user always gets an
-answer and always knows its status.
+On failure the specific errors go back for **one** repair attempt. If the repair also fails, the
+response is returned marked `unverified` with invalid citations removed. If it cannot be parsed at
+all, code builds the response from the ledger. The user always gets an answer and always knows its
+status.
 
 ### How much it says
 
-The answer is the size of the question, and that is enforced in two places rather than asked for in
-one. The prompt says to answer what was asked and stop — a lookup deserves a sentence, an
-investigation a short report, and length is not thoroughness. The schema then bounds it: 8 observed
-facts, 3 hypotheses, 3 recommended actions, 5 gaps, 1200 characters of message.
+The answer is the size of the question, enforced in two places rather than asked for in one. The
+prompt says to answer what was asked and stop. The schema bounds it: 8 observed facts, 3 hypotheses,
+3 recommended actions, 5 gaps, 1200 characters of message.
 
-The bounds matter because the failure mode is not verbosity for its own sake. An agent that has
-made ten tool calls is under pressure to justify all ten, and the natural way to do that is to list
-every result as an observed fact. That turns a one-line answer into a report nobody reads, and it
-buries the two facts that actually matter. Investigating widely and reporting briefly are separate
-things, and only the second should be rationed.
+The failure mode is not verbosity for its own sake. An agent that made ten tool calls is under
+pressure to justify all ten, and the natural way is to list every result as a fact — which buries the
+two that matter. Investigating widely and reporting briefly are separate things; only the second
+should be rationed.
 
 ### Confidence
 
-Confidence describes how well the evidence supports a hypothesis. It is not a probability and not
-proof of causation. The model proposes it; code lowers it when the evidence does not support it,
-and says so visibly.
+Confidence describes how well evidence supports a hypothesis. It is not a probability and not proof of
+causation. The model proposes it; code lowers it when the evidence does not support it, visibly.
 
 | Rule | Reason |
 |---|---|
-| No supporting evidence → `low` | An unsupported idea is a guess. |
-| Any tool call that failed this turn → at most `medium` | Part of the picture is missing, whatever the model says about it. |
-| Fewer than two distinct data tools with status `ok` among the supporting evidence → at most `medium` | Independent sources must agree. "Different tools" is a deliberately simple proxy for independence. |
-| Cited contradicting evidence → at most `medium` | An unresolved conflict rules out high confidence. |
-| Not the single most broadly supported hypothesis → at most `medium` | Two competing explanations cannot both be well supported. |
-| `likely_cause` must be null unless some hypothesis reaches `medium` | Otherwise the report says inconclusive. |
+| No supporting evidence → `low` | an unsupported idea is a guess |
+| Any tool call failed this turn → at most `medium` | part of the picture is missing |
+| Fewer than two distinct `ok` data tools supporting it → at most `medium` | independent sources must agree; "different tools" is a deliberately simple proxy |
+| Cited contradicting evidence → at most `medium` | an unresolved conflict rules out high |
+| Not the single most broadly supported hypothesis → at most `medium` | two competing explanations cannot both be well supported |
+| `likely_cause` null unless some hypothesis reaches `medium` | otherwise the report says inconclusive |
 
-An `empty` observation may be cited — "no deployment records were found" can support a hypothesis
-that no deployment was involved — but it never counts towards the two-tool rule. Absence of data
-cannot raise confidence.
+An `empty` observation may be cited — "no deployment records were found" can support a hypothesis that
+no deployment was involved — but never counts towards the two-tool rule. Absence of data cannot raise
+confidence.
 
-**The caps are read from the evidence ledger, not from the model's own fields.** This is deliberate.
-An earlier version capped confidence whenever the model listed `missing_evidence`, which rewards
-leaving it blank: the cheapest way to keep a high rating is to report less. Reading failures from
-the ledger instead means the cap applies whether or not the model mentions them, and a separate
-check requires it to mention them. `test_report.py` pins this: a silent payload and an honest one
-get the same confidence.
+**The caps read the evidence ledger, not the model's own fields.** An earlier version capped confidence
+whenever the model listed `missing_evidence`, which rewards leaving it blank: the cheapest way to keep
+a high rating is to report less. Reading failures from the ledger means the cap applies whether or not
+the model mentions them, and a separate check requires it to. `test_report.py` pins this: a silent
+payload and an honest one get the same confidence.
 
 ## What enforces what
 
@@ -406,44 +332,42 @@ The design does not claim enforcement that code does not provide.
 
 | Rule | Enforced by |
 |---|---|
-| A failed call cannot be cited | Code (`finalize`) |
-| Every observed fact cites an observation | Code (schema and `finalize`) |
-| A failed call must appear in `gaps` or `missing_evidence` | Code (`finalize`) |
-| An empty result is worded as a query result, not proof of absence | Code (summary wording); the model's own phrasing is the prompt's job |
-| An empty result cannot raise confidence | Code |
-| Confidence downgrades are visible | Code |
-| A forced final answer says it was stopped early | Code |
-| An unverified response is marked unverified | Code |
-| Time assumptions appear in the report | Code (copied from the resolver) |
-| Truncation and insufficient data are disclosed | Code (summaries) |
-| A note cites only observations that succeeded; at most one per turn | Code (executor policy) |
-| No tool can change production | Code (no such tool exists) |
-| A citation actually supports the statement it is attached to | **Not enforced** — see Limitations |
-| Contradicting evidence is reported at all | Prompt; the cap applies only to what the model volunteers |
-| Timing alone is correlation, not causation | Prompt |
-| A note is only filed for an investigation that reached a finding | Prompt |
-| `resolve_time_range` is used for worded or date-less expressions | Prompt |
+| A failed call cannot be cited | code (`finalize`) |
+| Every observed fact cites an observation | code (schema and `finalize`) |
+| A failed call appears in `gaps` or `missing_evidence` | code (`finalize`) |
+| An empty result is worded as a query result, not proof of absence | code (summary wording) |
+| An empty result cannot raise confidence | code |
+| Confidence downgrades are visible | code |
+| A forced final answer says it stopped early | code |
+| An unverified response is marked unverified | code |
+| Time assumptions appear in the report | code (copied from the resolver) |
+| Truncation and insufficient data are disclosed | code (summaries) |
+| A note cites only successful observations; one per turn | code (executor policy) |
+| No tool can change production | code (no such tool exists) |
+| **A citation actually supports its statement** | **not enforced** — see Limitations |
+| Contradicting evidence is reported at all | prompt; the cap applies only to what the model volunteers |
+| Timing alone is correlation, not causation | prompt |
+| A note is filed only for an investigation with a finding | prompt; evaluation |
+| `resolve_time_range` is used for worded expressions | prompt |
 
 ## Actions and dangerous operations
 
 `create_incident_note` runs automatically, as the brief allows. It is called during the loop, before
-the final answer exists, so code cannot judge whether it is warranted. Enforcement is split
-honestly: code checks the structure (citations valid, fields bounded, one per turn), the prompt
-carries the judgement. Verifying the judgement is what the evaluation suite is for, and that is the
-piece still to be built.
+the final answer exists, so code cannot judge whether it is warranted. Enforcement is split honestly:
+code checks structure (valid citations, bounded fields, one per turn), the prompt carries the
+judgement, and the evaluation verifies it — scenarios assert zero notes where none is wanted.
 
 **There is no tool that changes production.** Asked to roll back, the agent does not act; it explains
-that a human must carry it out or approve it, and may recommend it. This is a scope decision, not an
-omission: the brief makes a rollback action optional, and the guardrail worth demonstrating is that
-the agent cannot take a destructive action at all. A `rollback_deployment` tool behind an explicit
-approval checkpoint — the loop pausing, returning `pending_action`, and executing only after the
-user confirms that exact service and version — is the first thing to add next.
+that a human must carry it out, and may recommend it. This is a scope decision, not an omission: the
+brief makes a rollback action optional, and the guardrail worth demonstrating is that the agent cannot
+take a destructive action at all. A `rollback_deployment` behind an approval checkpoint — the loop
+pausing, returning `pending_action`, executing only after the user confirms that exact service and
+version — is the first thing to add next.
 
-## State: what the product remembers
+## State and run logs
 
-Two databases, and the split is the point. The **dataset** is replaced on every upload. The
-**state** database is not: conversations, run logs and evaluation results all have to outlive a new
-upload and a server restart.
+Two databases. The **dataset** is replaced on every upload. The **state** database is not:
+conversations, run logs and evaluation results outlive both a new upload and a restart.
 
 | Group | Tables |
 |---|---|
@@ -451,126 +375,105 @@ upload and a server restart.
 | Conversations | `session`, `turn`, `message`, `obs` |
 | Evaluations | `eval_run`, `eval_result` |
 
-A conversation stores three things because they answer three questions: `turn` is what the UI
-replays, `message` is the model conversation needed to continue it, and `obs` is the evidence
-ledger that makes an earlier observation still citable in a later turn. It is rewritten after each
-turn rather than appended to — a conversation is small, and one write that is obviously correct
-beats three that have to agree.
+A conversation stores three things because they answer three questions: `turn` is what the UI replays,
+`message` is what the agent needs to continue, `obs` is the ledger that keeps an earlier observation
+citable later. It records the dataset it was asked about; one started against a previous dataset is
+kept as history rather than resumed, because its evidence refers to data no longer loaded.
 
-A conversation records the dataset it was asked about. One started against a previous dataset is
-kept as history rather than resumed, because its evidence refers to data that is no longer loaded.
+Every workflow — ingest, turn, evaluation — opens a run and writes ordered events, chosen so one run
+reads as an account of what happened and nothing more:
 
-## Run logs
-
-Every workflow opens a run and writes ordered events to it: an ingest, an agent turn, an evaluation
-run.
-
-The events are chosen so that one run reads as an account of what the system did, and nothing more:
-
-| Event | When |
+| Event | Carries |
 |---|---|
-| `turn.start` / `turn.done` | the question, then the response type and the counts |
-| `model.step` | which tools the model asked for at that step |
-| `tool.call` | one per call: its position in the turn, the step it belonged to, the arguments that matter, status, attempts, duration, and what it found |
+| `turn.start` / `turn.done` | the question; then the response type and the counts |
+| `model.step` | which step of the budget, and which tools were asked for at once |
+| `tool.call` | position in the turn, step, the arguments that matter, status, attempts, duration, what it found |
 | `response.rejected` | a final response failed validation and went back for repair |
-| `turn.forced_final` | the loop stopped early, and whether it was the budget or no progress |
-| `ingest.start` / `parsed` / `derived` / `failed` | what was read, what was skipped, what was derived |
-| `eval.start` / `scenario` / `done` | per-scenario pass, critical flag, coverage and scores |
+| `turn.forced_final` | the loop stopped early, and whether it was budget or no progress |
+| `ingest.*` | what was read, what was skipped and why, what was derived |
+| `eval.*` | per-scenario pass, critical flag, coverage, scores |
 
-Two decisions. **Failures are recorded before they propagate** — a turn that raises still leaves a
-run with status `error` and a `turn.failed` event, because a crash with no trace is the one thing
-you cannot debug afterwards. And **logs live in a separate database**, because ingesting replaces
-the dataset, and the record of what happened has to survive that.
+**Failures are recorded before they propagate.** A turn that raises still leaves a run marked `error`
+with a `turn.failed` event; a crash with no trace is the one thing you cannot debug afterwards.
 
 ## Evaluation
 
-Twelve scenarios against the ingested dataset. The split in how they are scored is the design:
+Twelve scenarios against the ingested dataset. How they are scored is the design:
 
-**Deterministic checks for facts about the run.** Were the required tools called — in any order,
-since the agent is meant to be adaptive and a fixed sequence would punish it for investigating
-well. Did an invalid range reach the backend. Was a transient timeout retried and recovered. Was
-malformed output kept out of the evidence. Did a follow-up reuse the existing investigation. Was a
-note created where none was wanted. Wasted calls are counted and reported rather than failed,
-because "spent two extra calls" is information, not a defect.
+**Deterministic checks for facts about the run.** Were the required tools called — in any order, since
+a fixed sequence would punish the agent for investigating well. Did an invalid range reach the
+backend. Was a transient timeout retried and recovered. Was malformed output kept out of the evidence.
+Did a call use a value learnt from an earlier call. Did a follow-up reuse the investigation. Was a note
+created where none was wanted. Wasted calls are counted and reported, not failed: "spent two extra
+calls" is information, not a defect.
 
 **An LLM judge only for what needs reading**: factual correctness, grounding, uncertainty about
-causation, completeness, actionability — 0, 1 or 2 each. It can also raise a critical error. Its
-prompt is `prompts/judge.md`, a file like every other prompt, and it is told not to reward length.
+causation, completeness, actionability — 0, 1 or 2 each, and it can raise a critical error. Its prompt
+is `prompts/judge.md`, a file like the others, and it is told not to reward length.
 
-The suite runs from the command line or from the Evaluation tab. From the tab it runs on a worker
-thread and the page polls for progress, because twelve scenarios take minutes and a request that
-long would time out. Results are written to the database after each scenario, so a run that is
-interrupted still leaves everything it managed to score.
+A scenario passes when nothing critical happened, every required tool was called, every deterministic
+check held, and no judge score is 0.
 
-A scenario passes when nothing critical happened, every required tool was called, every
-deterministic check held, and no judge score is 0.
+It runs from the command line or the Evaluation tab. From the tab it runs on a worker thread and the
+page polls, because twelve scenarios take minutes. Results are written after each scenario, so an
+interrupted run keeps everything it scored.
 
-One thing worth noting: several of the critical errors the brief cares about are already impossible
-rather than merely checked. A failed call cannot be cited because `finalize()` rejects it, and an
-invented metric cannot exist because the store has no rows to invent from. The evaluation asserts
-them anyway — a guardrail that is never exercised is a guardrail nobody notices has broken.
+Several of the critical errors the brief names are already *impossible* rather than merely checked: a
+failed call cannot be cited because `finalize()` rejects it, and an invented metric cannot exist
+because the store has no rows to invent from. The evaluation asserts them anyway — a guardrail never
+exercised is one nobody notices has broken.
 
 ## Limitations
 
-1. **Citation checking proves provenance, not entailment.** Code verifies that `obs_004` exists and
-   succeeded. It cannot verify that `obs_004` actually says what the statement claims. A model could
-   cite a real observation for a claim it does not support and pass every check. An LLM judge
-   scoring entailment is the production answer.
+1. **Citation checking proves provenance, not entailment.** Code verifies `obs_004` exists and
+   succeeded, not that it says what the statement claims. An LLM judge scoring entailment is the
+   production answer.
 2. **A window lying entirely inside an incident cannot be detected.** With no quiet points to compare
    against, a constant 17% error rate is indistinguishable from a service whose normal rate is 17%.
-   The summary asks for a wider window whenever it can tell, but it cannot always tell.
-3. **Spike detection finds increases only.** Traffic falling to zero is a real incident signature and
-   is not detected.
-4. **`error_rate` is only as precise as the log volume.** It is errors over events in a one-minute
-   bucket, so for a service logging five events a minute one error reads as 20%. On low-volume
-   services the rate is noisy and a single error can cross the threshold.
-5. **The contradiction cap depends on the model reporting the contradiction.** Code cannot detect
-   that two observations conflict in meaning.
+3. **Spike detection finds increases only.** Traffic falling to zero is a real signature and is missed.
+4. **`error_rate` is only as precise as the log volume.** Errors over events in a one-minute bucket: at
+   five events a minute, one error reads as 20%.
+5. **The contradiction cap depends on the model reporting the contradiction.** Code cannot detect that
+   two observations conflict in meaning.
 6. **Code cannot force the use of `resolve_time_range`.** The model can pass timestamps it worked out
-   itself. The validator still bounds them.
-7. **Sessions are in memory.** The dataset and the run logs are persistent; conversations are not,
-   and restarting the server loses them.
-8. **The judge is a single model call with no second opinion.** It sees the question, the expected
-   answer and the agent's response, and its scores are as variable as any model's. It is there to
-   catch what deterministic checks cannot read, not to be an authority.
-9. **Only one evaluation can run at a time**, and its progress is held in memory. Restarting the
-   server mid-run loses the progress, though every scenario already scored is in the database.
+   itself; the validator still bounds them.
+7. **The judge is a single model call with no second opinion**, as variable as any model. It catches
+   what deterministic checks cannot read; it is not an authority.
+8. **One evaluation at a time**, with progress held in memory. Restarting mid-run loses the progress,
+   though every scenario already scored is in the database.
 
 ## What would change for production scale
 
-- **Real backends** behind the same `Store` interface — the executor, the envelope and the summaries
-  do not change. Per-tool timeouts and circuit breakers, since a real logging API is slower and less
-  reliable than a local query, and streaming ingest straight to disk rather than reading the upload
-  into memory.
-- **Persistent sessions** in a database, and compaction of old tool results down to their summaries
-  once a conversation outgrows the context window.
-- **Cost controls per tenant**, not just per turn, with the token usage already returned by the
-  adapter recorded against them.
-- **Tracing.** The run log is most of a trace already; what it lacks is token counts and cost per
-  turn, and a way to ship the events somewhere other than SQLite.
-- **Auth, RBAC and an audit log**, which become necessary the moment any tool can change something.
-- **Approval workflow** for mutating actions, as described above.
-- **Evaluations in CI**, with the pass rate tracked over time, so a prompt change that costs accuracy
-  is visible before it ships.
+- **Real backends** behind the same `Store` interface — the executor, envelope and summaries do not
+  change. Per-tool timeouts and circuit breakers, and streaming ingest to disk rather than reading the
+  upload into memory.
+- **Context compaction**: old tool results collapsed to their summaries once a conversation outgrows
+  the window.
+- **Cost controls per tenant**, not just per turn.
+- **Tracing**: the run log is most of one; it lacks token counts and cost, and a way to ship events
+  somewhere other than SQLite.
+- **Auth, RBAC and an audit log**, necessary the moment a tool can change something.
+- **Approval workflow** for mutating actions, as above.
+- **Evaluations in CI**, pass rate tracked over time, so a prompt change that costs accuracy is visible
+  before it ships.
 - **Entailment checking** on citations, closing limitation 1.
 
 ## Where each requirement is answered
 
-| The brief asks for | Here |
+| The brief asks for | Section |
 |---|---|
 | Dynamic tool selection | How the agent chooses a tool |
-| Multi-step investigation | The agent loop; scenario E04 asserts a call whose arguments came from an earlier result |
-| Evidence-based output, facts separated from hypotheses | The final response; What enforces what |
+| Multi-step investigation | How the agent chooses a tool; scenario E04 asserts it |
+| Evidence-based output, facts separate from hypotheses | The final response; What enforces what |
 | Recommended next actions | The final response |
-| Conversation state and follow-ups | Conversation state; State: what the product remembers |
+| Conversation state and follow-ups | Conversation state; State and run logs |
 | Tool timeouts and temporary failures | Handling poor or contradictory tool responses |
 | Empty or malformed responses | Handling poor or contradictory tool responses |
 | Preventing repeated or infinite loops | Preventing loops and runaway cost |
-| Validating tool arguments | The agent loop (the executor pipeline); Time |
+| Validating tool arguments | The agent loop; Time |
 | Invalid or nonsensical time ranges | Time |
 | Not executing dangerous actions | Actions and dangerous operations |
 | Why this architecture | Why this architecture |
-| How loops and runaway costs are prevented | Preventing loops and runaway cost |
 | How poor or contradictory responses are handled | Handling poor or contradictory tool responses |
 | How conversation state is maintained | Conversation state |
 | What would change for production scale | What would change for production scale |

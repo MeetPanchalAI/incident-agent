@@ -25,7 +25,7 @@ python -m incident_agent.cli --ingest logs.jsonl  # load a dataset from the comm
 python -m incident_agent.cli                      # interactive
 python -m incident_agent.cli "your question"      # one question, then exit
 python -m evaluations.runner                      # the twelve evaluation scenarios
-pytest                                            # 214 tests, no API key needed
+pytest                                            # 218 tests, no API key needed
 ```
 
 Upload a log file with the **Upload data** button, then ask questions. Nothing works until a
@@ -64,10 +64,9 @@ richer tools possible.
 | `status_code` | no | Stored, not currently read by a tool |
 
 A line missing a required field is skipped, counted and reported — never silently dropped. If
-nothing in the file is usable the ingest is refused, rather than leaving you with an empty dataset.
+nothing in the file is usable, the ingest is refused.
 
-**The file only has to contain events.** The other three tool surfaces are computed from them at
-ingest time:
+**The file only has to contain events.** The other three tool surfaces are computed from them:
 
 | Derived | How |
 |---|---|
@@ -82,38 +81,32 @@ agent cannot reason over data that was never collected.
 
 ### Bringing your own dataset
 
-Four things determine what the agent will be able to find in it.
+Three things decide what the agent can find.
 
-**Volume.** `error_rate` is errors divided by events in a one-minute bucket, so at five events a
-minute one error reads as 20%. Twenty or more events a minute per active service keeps the rate
-meaningful.
+- **`target` belongs on the caller.** The edge `checkout-api → orders-db` comes from checkout-api's
+  own lines. Without it there is no dependency graph. A service only ever called still appears, but
+  has no metrics of its own.
+- **`latency_ms` is per service.** One that never reports it has no `latency_p95_ms`, and the agent
+  says so rather than estimating.
+- **Volume.** `error_rate` is errors over events in a one-minute bucket, so at five events a minute
+  one error reads as 20%. Twenty or more keeps it meaningful.
 
-**`target` belongs on the caller.** The edge `checkout-api -> orders-db` comes from checkout-api's
-own lines carrying `"target": "orders-db"`. Without it there is no dependency graph. A service that
-is only ever called still appears, but has no metrics of its own.
-
-**`latency_ms` is per service.** A service that never reports it has no `latency_p95_ms`, and the
-agent will correctly say so rather than estimate one.
-
-**Variety, if you want to test judgement rather than lookup.** Useful situations to include:
+To test judgement rather than lookup, include situations with a right answer that is not a lookup:
 
 | Situation | What it tests |
 |---|---|
-| A service that is fine throughout | Whether the agent says "nothing is wrong" instead of inventing a cause |
-| An incident with one clear cause | The basic investigation |
-| Two plausible causes minutes apart | Whether it holds both open instead of picking one |
-| An upstream service degrading first | Whether it follows dependencies rather than stopping at the symptom |
-| A deployment long before an unrelated problem | Whether it blames the nearest deployment regardless |
-| A service missing `latency_ms` | Whether it reports the gap instead of filling it |
+| A service that is fine throughout | says "nothing is wrong" instead of inventing a cause |
+| An incident with one clear cause | the basic investigation |
+| Two plausible causes minutes apart | holds both open instead of picking one |
+| An upstream service degrading first | follows dependencies rather than stopping at the symptom |
+| A deployment long before an unrelated problem | does not blame the nearest deployment regardless |
+| A service missing `latency_ms` | reports the gap instead of filling it |
 
-For a small working example:
+A small working example, the generator the tests use:
 
 ```bash
 python -m tests.sample_data > sample_logs.jsonl
 ```
-
-That is the generator the tests use: two hours, three services, one deployment, an error spike and
-a database degrading underneath it.
 
 ## The dataset used here
 
@@ -164,23 +157,19 @@ agree on which files exist.
 
 ## Answer length
 
-The answer is the size of the question. A lookup gets a sentence; an investigation gets a short
-report. Both are bounded by the schema, not only asked for in the prompt: at most 8 observed facts,
-3 hypotheses, 3 recommended actions, 5 gaps, and a message of 1200 characters.
+The answer is the size of the question, bounded by the schema rather than only asked for in the
+prompt: at most 8 observed facts, 3 hypotheses, 3 recommended actions, 5 gaps, 1200 characters.
 
 ```
 Q: Was there a deployment of checkout-api between 14:00 and 15:00 UTC?
-   1 tool call, 86 characters
+   1 tool call, 86 characters, 1 fact, no hypotheses, no actions
    "Yes. checkout-api version v142 was deployed successfully at 14:32 UTC on 22 September."
-   1 fact, no hypotheses, no recommended actions
 
 Q: Investigate why checkout-api had increased errors that afternoon.
-   8 tool calls, 504 characters
-   5 facts, 2 hypotheses, 3 recommended actions, 2 gaps
+   8 tool calls, 504 characters, 5 facts, 2 hypotheses, 3 actions, 2 gaps
 ```
 
-Investigating widely and reporting briefly are separate things. The agent still makes every call it
-needs; it just does not read the transcript back to you.
+Investigating widely and reporting briefly are separate things.
 
 ## Layout
 
@@ -205,12 +194,12 @@ src/incident_agent/
     executor.py     the guardrail pipeline for one tool call
     summaries.py    deterministic summaries, including spike detection
     time_resolver.py  time expressions to UTC ranges
-tests/              214 tests, no API key required
+tests/              218 tests, no API key required
 ```
 
 ## Tests
 
-`pytest` runs 214 tests against a scripted fake model. They are deterministic, free, and need no
+`pytest` runs 218 tests against a scripted fake model. They are deterministic, free, and need no
 network. `tests/sample_data.py` builds the dataset they share.
 
 | File | Covers |
@@ -247,23 +236,15 @@ dimensions as a row of coloured squares, and the reason for anything that failed
 listed underneath and can be reopened, so a change to a prompt or a parameter can be compared
 against the last run.
 
-Scoring is split deliberately.
+Scoring is split: **deterministic checks** for facts about the run (were the required tools called,
+in any order; did an invalid range reach the backend; was a timeout retried; was malformed output
+kept out of the evidence; did a follow-up reuse the investigation; was a note created where none was
+wanted), and an **LLM judge** only for what needs reading (correctness, grounding, uncertainty,
+completeness, actionability — 0, 1 or 2 each). A scenario passes when nothing critical happened,
+coverage is complete, every check held, and no score is 0. `DESIGN.md` explains why.
 
-**Deterministic** for anything that is a fact about the run: were the required tools called (in any
-order), did an invalid time range reach the backend, was a transient timeout retried and recovered,
-was malformed output kept out of the evidence, did a follow-up reuse the existing investigation,
-was an incident note created where none was wanted. Wasted calls — duplicates, rejected arguments,
-calls past the budget — are counted and reported, not failed.
-
-**An LLM judge** only for what needs reading: factual correctness, grounding in the evidence,
-appropriate uncertainty about causation, completeness and actionability. Each is scored 0 (wrong),
-1 (partially correct) or 2 (correct), and the judge can raise a critical error of its own.
-
-A scenario passes when nothing critical happened, every required tool was called, every
-deterministic check held, and no judge score is 0.
-
-Two scenarios inject faults through the store: `E08` times a metrics call out on its first attempt,
-`E09` returns one malformed metrics response.
+Two scenarios inject faults: `E08` times a metrics call out on its first attempt, `E09` returns one
+malformed metrics response.
 
 ## Monitoring
 
@@ -280,9 +261,9 @@ tool.call     #2 get_metrics(catalog-service, error_rate, 00:00-23:55) -> ok in 
 turn.done     investigation_report: catalog-service had a significant incident on 23 September
 ```
 
-Each tool call carries its position in the turn, the step it belonged to, the arguments that
-matter, the status, the attempt count, the duration and what it found. The **Monitoring** tab lists
-runs newest first; clicking one shows its events.
+Each tool call carries its position in the turn, the step, the arguments that matter, status,
+attempts, duration and what it found. The **Monitoring** tab lists runs newest first; clicking one
+shows its events.
 
 ## Persistence
 

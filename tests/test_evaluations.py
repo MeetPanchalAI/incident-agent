@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from evaluations.judge import deterministic, evaluate, parse_required, tool_coverage
+from evaluations.judge import (deterministic, evaluate, parse_required, tool_coverage,
+                               used_a_prior_result)
 from evaluations.runner import load_scenarios, questions, run_scenario
 from tests.conftest import WINDOW, submit
 
@@ -213,3 +214,35 @@ def test_running_many_scenarios_does_not_accumulate_threads_or_connections(setti
     for _ in range(6):
         run_scenario(scenario, settings, llm=FakeLLM([[DEPS], [("submit_response", submit())]]))
     assert threading.active_count() <= before + 8  # the shared pool, not six pools
+
+
+# -- the multi-step requirement --------------------------------------------
+
+
+def test_chaining_is_seen_when_a_service_came_from_a_dependency_lookup():
+    assert used_a_prior_result([
+        {**observation(tool="get_service_dependencies", category="data"),
+         "summary": "payment-service depends on: payment-gateway."},
+        observation(tool="get_metrics", identifier="obs_002", service="payment-gateway"),
+    ]) is True
+
+
+def test_chaining_is_seen_when_a_window_is_narrowed_inside_an_earlier_one():
+    wide = observation(service="checkout-api", start_time="2026-09-22T14:00:00Z",
+                       end_time="2026-09-22T16:00:00Z")
+    narrow = observation(tool="search_logs", identifier="obs_002", service="checkout-api",
+                         start_time="2026-09-22T14:30:00Z", end_time="2026-09-22T15:00:00Z")
+    assert used_a_prior_result([wide, narrow]) is True
+
+
+def test_two_independent_calls_are_not_chaining():
+    assert used_a_prior_result([
+        observation(service="checkout-api", start_time="2026-09-22T14:00:00Z", end_time="2026-09-22T16:00:00Z"),
+        observation(tool="get_deployments", identifier="obs_002", service="checkout-api",
+                    start_time="2026-09-22T14:00:00Z", end_time="2026-09-22T16:00:00Z"),
+    ]) is False
+
+
+def test_the_upstream_scenario_requires_chaining():
+    flat = deterministic({"id": "E04", "action": "a note"}, transcript([observation(service="payment-service")]))
+    assert flat["checks"]["used_a_prior_result"] is False
